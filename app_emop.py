@@ -23,15 +23,17 @@ def validar_acesso_exclusivo(token_digitado):
         return False
 
 # 3. Interface do Aplicativo
-st.title("Buscador de Preços - EMOP")
+st.set_page_config(page_title="Buscador EMOP", layout="wide")
+st.title("🔍 Buscador de Preços - EMOP")
 
 # Sistema de Login por Token
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
 if not st.session_state.autenticado:
+    st.subheader("Acesso Restrito")
     token_input = st.text_input("Insira seu token de acesso:", type="password")
-    if st.button("Acessar"):
+    if st.button("Acessar Sistema"):
         if validar_acesso_exclusivo(token_input):
             st.session_state.autenticado = True
             st.success("Acesso liberado!")
@@ -40,33 +42,28 @@ if not st.session_state.autenticado:
             st.error("Token inválido ou expirado.")
 else:
     # --- ÁREA LOGADA DO APP ---
-    st.sidebar.success("Conectado")
-    if st.sidebar.button("Sair"):
+    st.sidebar.success("Usuário Autenticado")
+    if st.sidebar.button("Encerrar Sessão"):
         st.session_state.autenticado = False
         st.rerun()
 
-    termo_busca = st.text_input("O que você deseja buscar na base EMOP?")
+    st.markdown("### Pesquisa na Base de Dados")
+    termo_busca = st.text_input("Digite o nome do material ou código EMOP:")
     
-    if st.button("Buscar"):
-        # Exemplo de lógica de busca (ajuste conforme sua tabela de dados)
-        try:
-            # Aqui simulamos a busca na sua tabela de itens EMOP
-            # Substitua 'itens_emop' pelo nome real da sua tabela de dados
-            response = supabase.table("itens_emop").select("*").ilike("descricao", f"%{termo_busca}%").execute()
-            dados = response.data
+    if st.button("Realizar Busca"):
+        if termo_busca:
+            try:
+                # Busca na tabela de itens (ajuste 'itens_emop' se o nome for outro)
+                response = supabase.table("itens_emop").select("*").ilike("descricao", f"%{termo_busca}%").execute()
+                dados = response.data
 
-            # CORREÇÃO DA LINHA 89 (Indentação corrigida)
-            if dados:
-                st.write(f"Encontrados {len(dados)} resultados:")
-                st.dataframe(dados)
-            else:
-                st.warning("Nenhum item encontrado com esse termo.")
-        
-        except Exception as e:
-            st.error(f"Erro ao realizar busca: {e}")
-
----
-
-### O que foi corrigido:
-* **Linha 89:** O bloco `if dados:` agora possui comandos recuados (o `st.write` e o `st.dataframe`), eliminando o `IndentationError`.
-* **Conexão httpx:** O código
+                if dados:
+                    st.write(f"Foram encontrados **{len(dados)}** resultados para sua busca.")
+                    st.dataframe(dados, use_container_width=True)
+                else:
+                    st.warning("Nenhum item encontrado com esse termo. Tente palavras-chave diferentes.")
+            
+            except Exception as e:
+                st.error(f"Erro ao realizar busca no banco: {e}")
+        else:
+            st.info("Por favor, digite um termo para buscar.")
