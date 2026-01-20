@@ -3,85 +3,98 @@ import streamlit as st
 from supabase import create_client
 import os
 
-# 1. SEGURANÇA (Supabase)
+# 1. SEGURANÇA (Supabase - Bloqueio de uso simultâneo)
 url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(url, key)
 
 st.set_page_config(page_title="Gestor EMOP - Eng. Emerson Simões", layout="wide")
 
-# --- TRAVA DE ACESSO ---
+# --- SISTEMA DE LOGIN PROFISSIONAL ---
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
 if not st.session_state.autenticado:
     st.title("🏗️ Portal de Engenharia - Eng. Emerson Simões")
-    token = st.text_input("Insira seu Token:", type="password")
-    if st.button("Acessar"):
+    token = st.text_input("Insira seu Token de Licença:", type="password")
+    if st.button("Acessar Sistema"):
         res = supabase.table("licencas").select("*").eq("token", token).execute()
-        if res.data and not res.data[0]["em_uso"]:
-            supabase.table("licencas").update({"em_uso": True}).eq("token", token).execute()
-            st.session_state.autenticado = True
-            st.session_state.token_ativo = token
-            st.rerun()
+        if res.data:
+            item_token = res.data[0]
+            if not item_token["ativa"]:
+                st.error("Esta licença foi desativada.")
+            elif item_token["em_uso"]:
+                st.warning("⚠️ Este token já está em uso em outro dispositivo.")
+            else:
+                supabase.table("licencas").update({"em_uso": True}).eq("token", token).execute()
+                st.session_state.autenticado = True
+                st.session_state.token_ativo = token
+                st.rerun()
         else:
-            st.error("Erro no token ou já em uso.")
+            st.error("Token inválido.")
     st.stop()
 
-# --- BUSCADOR DE ENGENHARIA ---
+# --- BUSCADOR E CALCULADORA DE ENGENHARIA ---
 st.title("🔍 Buscador EMOP - Jan/2026")
 
 @st.cache_data
 def load_db(path):
-    # Verificação de arquivo (Diagnóstico)
     if not os.path.exists(path):
-        return f"ERRO: O arquivo {path} não foi encontrado no GitHub."
-    
+        return f"Erro: Arquivo {path} não encontrado."
     try:
         df = pd.read_excel(path)
-        # Se a planilha tiver mais ou menos colunas, ajustamos aqui:
         if len(df.columns) >= 7:
-            df = df.iloc[:, :7] # Garante que pegamos as 7 colunas da EMOP
+            df = df.iloc[:, :7]
             df.columns = ['C','D','U','Q','P','PC','T']
         
         db, pai = [], None
         for _, r in df.iterrows():
-            # Critério EMOP: Se tem Código e não tem Quantidade, é o Item Principal
+            # Identifica Item Principal
             if pd.notna(r['C']) and pd.isna(r['Q']):
                 pai = {'c': str(r['C']), 'd': str(r['D']), 'u': str(r['U']),
                        'p': float(r['P']) if pd.notna(r['P']) else 0.0, 'comp': []}
                 db.append(pai)
+            # Identifica Insumos da Composição
             elif pd.notna(r['Q']) and pai:
                 pai['comp'].append({'c': str(r['C']), 'd': str(r['D']), 'u': str(r['U']),
                                     'q': float(r['Q']), 'p': float(r['P']) if pd.notna(r['P']) else 0.0})
         return db
     except Exception as e:
-        return f"Erro ao processar Excel: {e}"
+        return f"Erro ao processar: {e}"
 
-# Tenta carregar os dados
 dados = load_db('emop 0126.xlsm')
 
-# Verificador de erros
-if isinstance(dados, str):
-    st.error(dados)
-    st.info("Verifique se o arquivo 'emop 0126.xlsm' está na pasta raiz do seu GitHub.")
-elif dados:
+if isinstance(dados, list) and dados:
     lista = [f"{i['c']} | {i['d']}" for i in dados]
-    sel = st.selectbox("Selecione o Item:", options=[""] + lista)
+    sel = st.selectbox("Selecione ou digite o código do serviço:", options=[""] + lista)
     
     if sel:
         it = next(i for i in dados if i['c'] == sel.split(" | ")[0])
+        st.divider()
         st.subheader(f"📍 {it['c']} - {it['d']}")
-        st.write(f"**Unidade:** {it['u']} | **Preço Unitário:** R$ {it['p']:.2f}")
         
-        if it['comp']:
-            st.write("### 📋 Composição")
-            st.table(pd.DataFrame(it['comp']))
-else:
-    st.warning("Nenhum dado encontrado na planilha. Verifique a formatação.")
+        # Painel de Quantitativos
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            q_obra = st.number_input(f"Quantidade da Obra ({it['u']}):", min_value=0.01, value=1.0)
+        with col2:
+            jor = st.number_input("Jornada (h/dia):", min_value=1.0, value=8.0)
+        with col3:
+            st.metric("VALOR TOTAL", f"R$ {q_obra * it['p']:,.2f}")
 
-# Logout
-if st.sidebar.button("Sair"):
-    supabase.table("licencas").update({"em_uso": False}).eq("token", st.session_state.token_ativo).execute()
-    st.session_state.autenticado = False
-    st.rerun()
+        # --- CALCULADORA DE MÃO DE OBRA E CRONOGRAMA ---
+        if it['comp']:
+            df_c = pd.DataFrame(it['comp'])
+            # Filtra insumos que têm 'H' (Hora) na unidade
+            mo = df_c[df_c['u'].str.upper().str.contains('H', na=False)].copy()
+            
+            if not mo.empty:
+                st.write("### 👷 Cronograma de Execução")
+                pzs = []
+                cols = st.columns(len(mo))
+                for idx, (i, r) in enumerate(mo.iterrows()):
+                    with cols[idx]:
+                        # Pega o nome do profissional (ex: PEDREIRO)
+                        nome_prof = " ".join(str(r['d']).split()[:2]).upper()
+                        n = st.number_input(f"Nº de {nome_prof}:", min_value=1, value=1, key=f"n_{i}")
+                        d
