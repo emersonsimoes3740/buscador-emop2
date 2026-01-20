@@ -1,69 +1,87 @@
+import pandas as pd
 import streamlit as st
-from supabase import create_client, Client
+from supabase import create_client
+import os
 
-# 1. Configuração Segura das Credenciais (Secrets)
-try:
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    supabase: Client = create_client(url, key)
-except Exception as e:
-    st.error("Erro ao carregar credenciais. Verifique os Secrets no painel do Streamlit.")
-    st.stop()
+# 1. SEGURANÇA (Supabase)
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
+supabase = create_client(url, key)
 
-# 2. Função de Validação de Acesso
-def validar_acesso_exclusivo(token_digitado):
-    if not token_digitado:
-        return False
-    try:
-        # Consulta na tabela 'licencas' do seu Supabase
-        res = supabase.table("licencas").select("*").eq("token", token_digitado).execute()
-        return len(res.data) > 0
-    except Exception as e:
-        st.error(f"Erro na conexão com o banco de dados: {e}")
-        return False
+st.set_page_config(page_title="Gestor EMOP - Eng. Emerson Simões", layout="wide")
 
-# 3. Interface do Aplicativo
-st.set_page_config(page_title="Buscador EMOP", layout="wide")
-st.title("🔍 Buscador de Preços - EMOP")
-
-# Sistema de Login por Token
+# --- TRAVA DE ACESSO ---
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
 if not st.session_state.autenticado:
-    st.subheader("Acesso Restrito")
-    token_input = st.text_input("Insira seu token de acesso:", type="password")
-    if st.button("Acessar Sistema"):
-        if validar_acesso_exclusivo(token_input):
+    st.title("🏗️ Portal de Engenharia - Eng. Emerson Simões")
+    token = st.text_input("Insira seu Token:", type="password")
+    if st.button("Acessar"):
+        res = supabase.table("licencas").select("*").eq("token", token).execute()
+        if res.data and not res.data[0]["em_uso"]:
+            supabase.table("licencas").update({"em_uso": True}).eq("token", token).execute()
             st.session_state.autenticado = True
-            st.success("Acesso liberado!")
+            st.session_state.token_ativo = token
             st.rerun()
         else:
-            st.error("Token inválido ou expirado.")
-else:
-    # --- ÁREA LOGADA DO APP ---
-    st.sidebar.success("Usuário Autenticado")
-    if st.sidebar.button("Encerrar Sessão"):
-        st.session_state.autenticado = False
-        st.rerun()
+            st.error("Erro no token ou já em uso.")
+    st.stop()
 
-    st.markdown("### Pesquisa na Base de Dados")
-    termo_busca = st.text_input("Digite o nome do material ou código EMOP:")
+# --- BUSCADOR DE ENGENHARIA ---
+st.title("🔍 Buscador EMOP - Jan/2026")
+
+@st.cache_data
+def load_db(path):
+    # Verificação de arquivo (Diagnóstico)
+    if not os.path.exists(path):
+        return f"ERRO: O arquivo {path} não foi encontrado no GitHub."
     
-    if st.button("Realizar Busca"):
-        if termo_busca:
-            try:
-                # Busca na tabela de itens (ajuste 'itens_emop' se o nome for outro)
-                response = supabase.table("itens_emop").select("*").ilike("descricao", f"%{termo_busca}%").execute()
-                dados = response.data
+    try:
+        df = pd.read_excel(path)
+        # Se a planilha tiver mais ou menos colunas, ajustamos aqui:
+        if len(df.columns) >= 7:
+            df = df.iloc[:, :7] # Garante que pegamos as 7 colunas da EMOP
+            df.columns = ['C','D','U','Q','P','PC','T']
+        
+        db, pai = [], None
+        for _, r in df.iterrows():
+            # Critério EMOP: Se tem Código e não tem Quantidade, é o Item Principal
+            if pd.notna(r['C']) and pd.isna(r['Q']):
+                pai = {'c': str(r['C']), 'd': str(r['D']), 'u': str(r['U']),
+                       'p': float(r['P']) if pd.notna(r['P']) else 0.0, 'comp': []}
+                db.append(pai)
+            elif pd.notna(r['Q']) and pai:
+                pai['comp'].append({'c': str(r['C']), 'd': str(r['D']), 'u': str(r['U']),
+                                    'q': float(r['Q']), 'p': float(r['P']) if pd.notna(r['P']) else 0.0})
+        return db
+    except Exception as e:
+        return f"Erro ao processar Excel: {e}"
 
-                if dados:
-                    st.write(f"Foram encontrados **{len(dados)}** resultados para sua busca.")
-                    st.dataframe(dados, use_container_width=True)
-                else:
-                    st.warning("Nenhum item encontrado com esse termo. Tente palavras-chave diferentes.")
-            
-            except Exception as e:
-                st.error(f"Erro ao realizar busca no banco: {e}")
-        else:
-            st.info("Por favor, digite um termo para buscar.")
+# Tenta carregar os dados
+dados = load_db('emop 0126.xlsm')
+
+# Verificador de erros
+if isinstance(dados, str):
+    st.error(dados)
+    st.info("Verifique se o arquivo 'emop 0126.xlsm' está na pasta raiz do seu GitHub.")
+elif dados:
+    lista = [f"{i['c']} | {i['d']}" for i in dados]
+    sel = st.selectbox("Selecione o Item:", options=[""] + lista)
+    
+    if sel:
+        it = next(i for i in dados if i['c'] == sel.split(" | ")[0])
+        st.subheader(f"📍 {it['c']} - {it['d']}")
+        st.write(f"**Unidade:** {it['u']} | **Preço Unitário:** R$ {it['p']:.2f}")
+        
+        if it['comp']:
+            st.write("### 📋 Composição")
+            st.table(pd.DataFrame(it['comp']))
+else:
+    st.warning("Nenhum dado encontrado na planilha. Verifique a formatação.")
+
+# Logout
+if st.sidebar.button("Sair"):
+    supabase.table("licencas").update({"em_uso": False}).eq("token", st.session_state.token_ativo).execute()
+    st.session_state.autenticado = False
+    st.rerun()
