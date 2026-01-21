@@ -40,22 +40,23 @@ def load_db(path):
         return db
     except Exception: return None
 
-def calcular_data_final(data_inicio, dias_uteis):
+def calcular_data_final_fixa(data_escolhida, dias_uteis):
     try:
         # Garante formato de data para o numpy
-        if isinstance(data_inicio, datetime):
-            data_inicio = data_inicio.date()
+        if isinstance(data_escolhida, datetime):
+            data_escolhida = data_escolhida.date()
         
-        inicio_np = np.datetime64(data_inicio)
+        inicio_np = np.datetime64(data_escolhida)
         dias_int = int(np.ceil(dias_uteis))
         
-        # Correção do erro: garante offset não negativo e tipo correto
+        # Se o serviço durar 1 dia, termina no mesmo dia (offset 0)
+        # Se durar mais, pula os dias úteis correspondentes
         offset = int(max(0, dias_int - 1))
         
         fim_np = np.busday_offset(inicio_np, offset, roll='forward')
         return pd.to_datetime(fim_np)
     except Exception:
-        return pd.to_datetime(data_inicio)
+        return pd.to_datetime(data_escolhida)
 
 def gerar_pdf(itens):
     pdf = FPDF()
@@ -97,7 +98,7 @@ if "autenticado" not in st.session_state:
 
 if not st.session_state.autenticado:
     st.title("🏗️ Portal Célula Engenharia")
-    token = st.text_input("Token ou Cupom de Teste:", type="password")
+    token = st.text_input("Token de Acesso:", type="password")
     if st.button("Entrar"):
         if token == "TESTE-GRATIS-30MIN":
             if "inicio_teste" not in st.session_state: st.session_state.inicio_teste = time.time()
@@ -114,7 +115,6 @@ if not st.session_state.autenticado:
 
 # --- INTERFACE PRINCIPAL ---
 st.title("🔍 Buscador & Planejador EMOP")
-data_inicio_obra = st.sidebar.date_input("Início da Obra:", datetime.now())
 
 dados = load_db('emop 0126.xlsm')
 
@@ -142,29 +142,25 @@ if dados:
                 for idx, (i, r) in enumerate(mo.iterrows()):
                     with cols[idx]:
                         nome = " ".join(str(r['d']).upper().replace('MAO-DE-OBRA DE ', '').split()[:2])
-                        n_h = st.number_input(f"Nº de {nome}:", min_value=1, value=1, key=f"n_{i}")
+                        n_h = st.number_input(f"Nº de {nome}:", min_value=1, value=1, key=f"n_{idx}_{item['c']}")
                         p_serv = (float(r['q']) * q_obra) / (jornada * n_h)
                         prazos_mo.append(p_serv)
                         st.write(f"⏱️ **{p_serv:.2f} dias**")
                 prazo_calc = max(prazos_mo) if prazos_mo else 0.0
 
-            st.write("### 📋 Composição e Insumos")
-            df_comp['Total'] = df_comp['q'] * q_obra * df_comp['p']
-            st.dataframe(df_comp.style.format({'q': '{:.4f}', 'p': 'R$ {:.2f}', 'Total': 'R$ {:.2f}'}), use_container_width=True)
-
         st.write("---")
-        dia_inicio_rel = st.number_input("Dia de Início (1 = Primeiro Dia):", min_value=1, value=1)
+        # NOVO CAMPO DE DATA XX/XX/XXXX
+        data_inicio_escolhida = st.date_input("Data de Início do Serviço:", value=datetime.now())
 
         if st.button("➕ Adicionar ao Relatório"):
-            dt_start = calcular_data_final(data_inicio_obra, dia_inicio_rel)
-            dt_end = calcular_data_final(dt_start, prazo_calc)
+            dt_end = calcular_data_final_fixa(data_inicio_escolhida, prazo_calc)
             
             st.session_state.cesta_itens.append({
                 "codigo": item['c'], "descricao": item['d'], "unid": item['u'], 
                 "quantidade": float(q_obra), "valor_total": float(q_obra * item['p']),
-                "prazo_dias": float(prazo_calc), "inicio": dt_start, "fim": dt_end
+                "prazo_dias": float(prazo_calc), "inicio": data_inicio_escolhida, "fim": dt_end
             })
-            st.toast("Adicionado!")
+            st.toast("Serviço e data adicionados com sucesso!")
 
 # --- GANTT E EXPORTAÇÃO ---
 if st.session_state.cesta_itens:
@@ -172,8 +168,12 @@ if st.session_state.cesta_itens:
     df_resumo = pd.DataFrame(st.session_state.cesta_itens)
     
     st.write("### 📊 Gráfico de Gantt")
-    fig = px.timeline(df_resumo, x_start="inicio", x_end="fim", y="descricao", color="codigo",
-                      labels={"descricao": "Serviço"}, title="Cronograma da Obra")
+    # Converte para datetime para o Plotly
+    df_resumo['inicio_dt'] = pd.to_datetime(df_resumo['inicio'])
+    df_resumo['fim_dt'] = pd.to_datetime(df_resumo['fim'])
+    
+    fig = px.timeline(df_resumo, x_start="inicio_dt", x_end="fim_dt", y="descricao", color="codigo",
+                      labels={"descricao": "Serviço"}, title="Cronograma Real da Obra")
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
     
@@ -190,15 +190,17 @@ if st.session_state.cesta_itens:
         try:
             buf = io.BytesIO()
             df_xl = df_resumo.copy()
-            df_xl['inicio'] = df_xl['inicio'].dt.strftime('%d/%m/%Y')
-            df_xl['fim'] = df_xl['fim'].dt.strftime('%d/%m/%Y')
+            df_xl['inicio'] = df_xl['inicio_dt'].dt.strftime('%d/%m/%Y')
+            df_xl['fim'] = df_xl['fim_dt'].dt.strftime('%d/%m/%Y')
+            # Remove colunas auxiliares do plotly
+            df_xl = df_xl.drop(columns=['inicio_dt', 'fim_dt'])
             with pd.ExcelWriter(buf, engine='openpyxl') as writer:
                 df_xl.to_excel(writer, index=False)
             st.download_button("📊 Baixar Excel", data=buf.getvalue(), file_name="cronograma.xlsx", use_container_width=True)
         except Exception as e: st.error(f"Erro Excel: {e}")
 
     with col_limpar:
-        if st.button("🗑️ Limpar Tudo", use_container_width=True): 
+        if st.button("🗑️ Limpar Lista", use_container_width=True): 
             st.session_state.cesta_itens = []; st.rerun()
 
 if st.sidebar.button("Sair"):
