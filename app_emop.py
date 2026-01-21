@@ -33,7 +33,7 @@ def load_db(path):
         pai = None
         for _, r in df.iterrows():
             if pd.notna(r['C']) and pd.isna(r['Q']):
-                codigo_limpo = str(r['C']).replace('.', '').strip()
+                codigo_limpo = str(r['C']).replace('.', '').replace('-', '').replace(' ', '').strip()
                 item_info = {
                     'c': codigo_limpo, 
                     'c_format': str(r['C']),
@@ -87,88 +87,109 @@ def gerar_pdf(itens, titulo="ORÇAMENTO"):
     pdf.cell(40, 10, f"R$ {total:,.2f}", 0, 1, "R")
     return bytes(pdf.output())
 
-# --- LOGIN ---
+# --- LOGIN (Simplificado) ---
 if not st.session_state.autenticado:
     st.title("🏗️ Portal Célula Engenharia")
-    tkn = st.text_input("Token de Acesso:", type="password")
-    if st.button("Entrar"):
-        st.session_state.autenticado = True # Simplificado para correção rápida
+    if st.button("Acessar Sistema"):
+        st.session_state.autenticado = True
         st.rerun()
     st.stop()
 
 db_map, db_list = load_db('emop 0126.xlsm')
 
-st.sidebar.title("🛠️ Ferramentas")
-tela = st.sidebar.radio("Selecione:", ["Buscador & Cronograma", "Atualizador PDF/Excel"])
+st.sidebar.title("🛠️ Menu")
+tela = st.sidebar.radio("Selecione:", ["Buscador & Cronograma", "Atualizador Inteligente"])
 
-# --- TELA 1: BUSCADOR COM CRONOGRAMA ---
+# --- TELA 1: BUSCADOR & CRONOGRAMA ---
 if tela == "Buscador & Cronograma":
-    st.title("🔍 Buscador EMOP + Calculadora de Cronograma")
-    sel = st.selectbox("Pesquisar:", options=[""] + db_list)
+    st.title("🔍 Buscador EMOP + Cronograma")
+    sel = st.selectbox("Pesquisar Serviço:", options=[""] + db_list)
     
     if sel and db_map:
-        cod_limpo = sel.split(" | ")[0].replace('.', '').strip()
+        cod_limpo = sel.split(" | ")[0].replace('.', '').replace('-', '').replace(' ', '').strip()
         item = db_map[cod_limpo]
         
         st.subheader(f"📍 {item['c_format']} - {item['d']}")
-        col1, col2, col3 = st.columns(3)
-        with col1: q_obra = st.number_input(f"Qtd ({item['u']}):", min_value=0.01, value=1.0)
-        with col2: jornada = st.number_input("Jornada (h/dia):", min_value=1.0, value=8.0)
-        with col3: st.metric("VALOR TOTAL", f"R$ {q_obra * item['p']:,.2f}")
+        c1, c2, c3 = st.columns(3)
+        with c1: q_obra = st.number_input(f"Qtd ({item['u']}):", min_value=0.01, value=1.0)
+        with c2: jornada = st.number_input("Jornada (h/dia):", min_value=1.0, value=8.0)
+        with c3: st.metric("VALOR TOTAL", f"R$ {q_obra * item['p']:,.2f}")
         
         if item['comp']:
             df_c = pd.DataFrame(item['comp'])
-            # Filtro de Mão de Obra para Cronograma
-            mo = df_c[df_c['d'].str.upper().str.contains('MAO-DE-OBRA|OFICIAL|AJUDANTE', na=False)].copy()
+            # Filtro refinado para Mão de Obra
+            mo = df_c[df_c['u'].str.upper().isin(['H', 'HORA'])].copy()
             if not mo.empty:
-                st.write("### 👷 Cronograma Estimado")
-                c_cols = st.columns(len(mo[:4])) # Mostra até 4 principais
+                st.write("### 👷 Calculadora de Prazo")
+                c_cols = st.columns(len(mo[:4]))
                 for i, (_, r) in enumerate(mo[:4].iterrows()):
                     with c_cols[i]:
-                        n_prof = st.number_input(f"Nº {r['d'][:15]}:", min_value=1, value=1, key=f"p_{i}")
+                        # Exibe o nome da Mão de Obra limpando o texto da EMOP
+                        nome_limpo = r['d'].replace('MAO-DE-OBRA DE ', '').replace('ENCARGOS COMPLEMENTARES', '').split(' - ')[0][:15]
+                        n_prof = st.number_input(f"Nº de {nome_limpo}:", min_value=1, value=1, key=f"p_{i}")
                         dias = (r['q'] * q_obra) / (jornada * n_prof)
                         st.info(f"⏱️ {dias:.1f} dias")
 
-            st.write("### 📋 Composição de Insumos")
+            st.write("### 📋 Composição Detalhada")
             df_c['Total'] = df_c['q'] * q_obra * df_c['p']
             st.dataframe(df_c.style.format({'q': '{:.4f}', 'p': 'R$ {:.2f}', 'Total': 'R$ {:.2f}'}), use_container_width=True)
 
         if st.button("➕ Adicionar ao Relatório"):
             st.session_state.cesta_itens.append({"codigo": item['c_format'], "descricao": item['d'], "unid": item['u'], "quantidade": q_obra, "valor_total": q_obra * item['p']})
-            st.toast("Sucesso!")
+            st.toast("Item salvo!")
 
     if st.session_state.cesta_itens:
         st.divider()
+        st.write("### 📋 Resumo do Orçamento")
         df_res = pd.DataFrame(st.session_state.cesta_itens)
         st.dataframe(df_res.style.format({'valor_total': 'R$ {:,.2f}'}), use_container_width=True)
-        st.download_button("📥 PDF do Orçamento", gerar_pdf(st.session_state.cesta_itens), "orcamento_celula.pdf")
-        if st.button("🗑️ Limpar"): st.session_state.cesta_itens = []; st.rerun()
+        st.download_button("📥 Baixar PDF Célula Engenharia", gerar_pdf(st.session_state.cesta_itens), "orcamento_emop.pdf")
+        if st.button("🗑️ Limpar Lista"): st.session_state.cesta_itens = []; st.rerun()
 
-# --- TELA 2: ATUALIZADOR PDF (MELHORADO) ---
-elif tela == "Atualizador PDF/Excel":
-    st.title("🔄 Atualizador de Orçamentos")
-    arq = st.file_uploader("Suba o PDF ou Excel antigo:", type=["pdf", "xlsx"])
+# --- TELA 2: ATUALIZADOR INTELIGENTE (PDF FIX) ---
+elif tela == "Atualizador Inteligente":
+    st.title("🔄 Atualizador Automático (PDF / Excel)")
+    st.info("O sistema buscará códigos EMOP no arquivo e atualizará para os preços de Jan/2026.")
+    
+    arq = st.file_uploader("Arraste o orçamento antigo aqui:", type=["pdf", "xlsx", "xls"])
     
     if arq and db_map:
         itens_extraidos = []
-        if arq.name.endswith(".pdf"):
-            with pdfplumber.open(arq) as pdf:
-                for page in pdf.pages:
-                    linhas = page.extract_text().split('\n')
-                    for l in linhas:
-                        # Regex robusto: procura padrões tipo 01.001.001 ou 123456
-                        m = re.search(r'(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}|\b\d{5,8}\b)', l)
-                        if m:
-                            c_found = m.group(1).replace('.', '').replace(' ', '').strip()
-                            if c_found in db_map:
-                                it = db_map[c_found]
-                                # Tenta pegar o último número decimal da linha como quantidade
-                                nums = re.findall(r'(\d+[.,]\d+)', l)
-                                q = float(nums[-1].replace(',', '.')) if nums else 1.0
-                                itens_extraidos.append({"codigo": it['c_format'], "descricao": it['d'], "unid": it['u'], "quantidade": q, "valor_total": q * it['p']})
         
-        if itens_extraidos:
-            st.success(f"{len(itens_extraidos)} itens localizados!")
-            df_f = pd.DataFrame(itens_extraidos)
-            st.dataframe(df_f.style.format({'valor_total': 'R$ {:,.2f}'}))
-            st.download_button("📥 Baixar PDF Atualizado", gerar_pdf(itens_extraidos, "ATUALIZAÇÃO EMOP"), "atualizado_celula.pdf")
+        if st.button("🚀 Iniciar Processamento Inteligente"):
+            if arq.name.endswith(".pdf"):
+                with pdfplumber.open(arq) as pdf:
+                    for page in pdf.pages:
+                        texto = page.extract_text()
+                        if texto:
+                            for linha in texto.split('\n'):
+                                # Regex mais flexível: pega códigos com pontos, espaços ou traços
+                                # Ex: 01.002.003 ou 01 002 003 ou 01002003
+                                match = re.search(r'(\d{2}[\.\s-]?\d{3}[\.\s-]?\d{3})', linha)
+                                if match:
+                                    c_encontrado = match.group(1).replace('.','').replace('-','').replace(' ','').strip()
+                                    if c_encontrado in db_map:
+                                        it = db_map[c_encontrado]
+                                        # Pega o último número da linha (geralmente a quantidade)
+                                        numeros = re.findall(r'(\d+[.,]\d+)', linha)
+                                        q = float(numeros[-1].replace(',', '.')) if numeros else 1.0
+                                        itens_extraidos.append({"codigo": it['c_format'], "descricao": it['d'], "unid": it['u'], "quantidade": q, "valor_total": q * it['p']})
+            else:
+                df_up = pd.read_excel(arq)
+                # Tenta achar colunas que pareçam código e quantidade automaticamente
+                c_cod = [c for c in df_up.columns if 'cod' in str(c).lower()][0] if any('cod' in str(c).lower() for c in df_up.columns) else df_up.columns[0]
+                c_qtd = [c for c in df_up.columns if 'qtd' in str(c).lower() or 'quant' in str(c).lower()][0] if any('qtd' in str(c).lower() for c in df_up.columns) else df_up.columns[1]
+                
+                for _, r in df_up.iterrows():
+                    c = str(r[c_cod]).replace('.','').replace('-','').replace(' ','').strip()
+                    if c in db_map:
+                        it = db_map[c]; q = float(r[c_qtd])
+                        itens_extraidos.append({"codigo": it['c_format'], "descricao": it['d'], "unid": it['u'], "quantidade": q, "valor_total": q * it['p']})
+
+            if itens_extraidos:
+                st.success(f"Encontramos {len(itens_extraidos)} serviços compatíveis!")
+                df_f = pd.DataFrame(itens_extraidos)
+                st.dataframe(df_f.style.format({'valor_total': 'R$ {:,.2f}'}), use_container_width=True)
+                st.download_button("📥 Baixar PDF Atualizado", gerar_pdf(itens_extraidos, "ATUALIZAÇÃO DE PREÇOS"), "atualizado_celula.pdf")
+            else:
+                st.error("Nenhum código EMOP foi reconhecido no arquivo. Verifique se o PDF possui texto selecionável.")
