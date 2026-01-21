@@ -12,7 +12,6 @@ supabase = create_client(url, key)
 
 st.set_page_config(page_title="Gestor EMOP - Eng. Emerson Simões", layout="wide")
 
-# Inicializa a cesta com estrutura protegida
 if "cesta_itens" not in st.session_state:
     st.session_state.cesta_itens = []
 
@@ -46,7 +45,7 @@ def gerar_pdf(itens):
     pdf.cell(190, 10, f"Data: {time.strftime('%d/%m/%Y')} | Ref: EMOP 01/2026", 0, 1, "C")
     pdf.ln(10)
     
-    # Cabeçalho
+    # Cabeçalho da Tabela
     pdf.set_fill_color(220, 220, 220)
     pdf.set_font("Helvetica", "B", 9)
     pdf.cell(25, 10, "Codigo", 1, 0, "C", True)
@@ -58,7 +57,6 @@ def gerar_pdf(itens):
     total_geral = 0
     pdf.set_font("Helvetica", "", 8)
     for it in itens:
-        # Recuperação segura de valores
         v_total = float(it.get('valor_total', 0))
         qtd = float(it.get('quantidade', 0))
         
@@ -66,13 +64,14 @@ def gerar_pdf(itens):
         pdf.cell(85, 10, str(it.get('descricao', ''))[:45], 1)
         pdf.cell(15, 10, str(it.get('unid', '')), 1, 0, "C")
         pdf.cell(25, 10, f"{qtd:.2f}", 1, 0, "C")
-        pdf.cell(40, 10, f"{v_total:.2f}", 1, 1, "R") # Correção do ValueError aqui
+        # FORMATADO COMO MOEDA NO PDF
+        pdf.cell(40, 10, f"R$ {v_total:,.2f}", 1, 1, "R")
         total_geral += v_total
         
     pdf.ln(5)
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(150, 10, "VALOR TOTAL DO ORCAMENTO:", 0, 0, "R")
-    pdf.cell(40, 10, f"R$ {total_geral:.2f}", 0, 1, "R")
+    pdf.cell(40, 10, f"R$ {total_geral:,.2f}", 0, 1, "R")
     return bytes(pdf.output())
 
 # --- LOGIN E SEGURANÇA ---
@@ -113,9 +112,9 @@ if dados:
         with c2: jornada = st.number_input("Jornada (h/dia):", min_value=1.0, value=8.0)
         with c3: st.metric("VALOR TOTAL", f"R$ {q_obra * item['p']:,.2f}")
         
-        # Composição e Cronograma
         if item['comp']:
             df_comp = pd.DataFrame(item['comp'])
+            # Cronograma
             mo = df_comp[(df_comp['u'].str.upper() == 'H') & (df_comp['d'].str.upper().str.contains('MAO-DE-OBRA', na=False))].copy()
             if not mo.empty:
                 st.write("### 👷 Cronograma de Execução")
@@ -135,9 +134,9 @@ if dados:
                 "codigo": item['c'], "descricao": item['d'], "unid": item['u'], 
                 "quantidade": float(q_obra), "valor_total": float(q_obra * item['p'])
             })
-            st.toast("Adicionado!")
+            st.toast("Adicionado ao orçamento!")
 
-# --- RESUMO E PDF ---
+# --- RESUMO COM FORMATAÇÃO DE MOEDA ---
 if st.session_state.cesta_itens:
     st.divider()
     st.write("### 📋 Resumo do Orçamento")
@@ -146,11 +145,18 @@ if st.session_state.cesta_itens:
     colunas_desejadas = ['codigo', 'descricao', 'unid', 'quantidade', 'valor_total']
     colunas_presentes = [c for c in colunas_desejadas if c in df_resumo.columns]
     
-    st.dataframe(df_resumo[colunas_presentes], use_container_width=True)
+    # EXIBE COMO MOEDA NA TELA
+    st.dataframe(
+        df_resumo[colunas_presentes].style.format({
+            'quantidade': '{:.2f}',
+            'valor_total': 'R$ {:,.2f}'
+        }), 
+        use_container_width=True
+    )
     
     try:
         pdf_bytes = gerar_pdf(st.session_state.cesta_itens)
-        st.download_button("📥 Baixar PDF", data=pdf_bytes, file_name="orcamento_celula.pdf")
+        st.download_button("📥 Baixar PDF Profissional", data=pdf_bytes, file_name="orcamento_celula_emop.pdf")
     except Exception as e:
         st.error(f"Erro ao gerar PDF: {e}")
         
