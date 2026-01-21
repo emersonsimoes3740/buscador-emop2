@@ -1,3 +1,4 @@
-supabase
+fpdf2
 pandas
 openpyxl
+supabase
