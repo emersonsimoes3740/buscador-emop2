@@ -22,7 +22,7 @@ if "cesta_itens" not in st.session_state:
 # --- FUNÇÕES DE SUPORTE ---
 
 def limpar_valor(valor):
-    """Converte strings brasileiras (6,23) para float (6.23)."""
+    """Trata strings brasileiras (ex: 6,23) para conversão em float."""
     if pd.isna(valor) or valor == "": return 0.0
     try:
         if isinstance(valor, str):
@@ -38,10 +38,11 @@ def load_db(path):
         df.columns = [str(c).strip() for c in df.columns]
         db, pai = [], None
 
-        # Lógica para Base EMOP (Lê por posição se os nomes falharem)
+        # Diferenciação de leitura entre EMOP e SINAPI
         if "emop" in path.lower():
             for _, r in df.iterrows():
                 cod = str(r.iloc[0]).strip()
+                # Item PAI (Serviço) identificado pela falta de coeficiente na coluna 4
                 if pd.isna(r.iloc[3]) or r.iloc[3] == 0:
                     pai = {'c': cod, 'd': str(r.iloc[1]).strip(), 'u': str(r.iloc[2]).strip(),
                            'p': limpar_valor(r.iloc[4]), 'comp': []}
@@ -50,8 +51,7 @@ def load_db(path):
                     pai['comp'].append({'Código': cod, 'Descrição do Item': str(r.iloc[1]).strip(),
                                         'Unidade': str(r.iloc[2]).strip(), 'Coeficiente': limpar_valor(r.iloc[3]),
                                         'Custo Hipotético': limpar_valor(r.iloc[4])})
-        # Lógica para Base SINAPI (Usa os nomes de coluna do seu script de formatação)
-        else:
+        else: # Lógica para SINAPI formatada
             for _, r in df.iterrows():
                 cod = str(r['Código']).strip()
                 if pd.isna(r['Coeficiente']) or r['Coeficiente'] == 0:
@@ -60,8 +60,8 @@ def load_db(path):
                     db.append(pai)
                 elif pai:
                     pai['comp'].append({'Código': cod, 'Descrição do Item': str(r['Descrição do Item']),
-                                        'Unidade': str(r['Unidade']), 'Coeficiente': limpar_valor(r['Coeficiente']),
-                                        'Custo Hipotético': limpar_valor(r['Custo Hipotético'])})
+                                       'Unidade': str(r['Unidade']), 'Coeficiente': limpar_valor(r['Coeficiente']),
+                                       'Custo Hipotético': limpar_valor(r['Custo Hipotético'])})
         return db
     except Exception as e:
         st.error(f"Erro ao carregar banco: {e}")
@@ -74,65 +74,22 @@ def calcular_data_final(data_inicio, dias_uteis):
         return pd.to_datetime(fim_np)
     except: return pd.to_datetime(data_inicio)
 
-def gerar_pdf(itens):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(190, 10, "CELULA ENGENHARIA - ORCAMENTO TECNICO", 0, 1, "C")
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(190, 10, f"Data: {time.strftime('%d/%m/%Y')} | Emerson Simões", 0, 1, "C")
-    pdf.ln(10)
-    
-    pdf.set_fill_color(220, 220, 220)
-    pdf.set_font("Helvetica", "B", 9)
-    pdf.cell(25, 10, "Codigo", 1, 0, "C", True)
-    pdf.cell(85, 10, "Descricao", 1, 0, "C", True)
-    pdf.cell(15, 10, "Unid", 1, 0, "C", True)
-    pdf.cell(25, 10, "Qtd", 1, 0, "C", True)
-    pdf.cell(40, 10, "Total (R$)", 1, 1, "C", True)
-    
-    total_geral = 0
-    pdf.set_font("Helvetica", "", 8)
-    for it in itens:
-        v_total = float(it.get('valor_total', 0))
-        pdf.cell(25, 10, str(it.get('codigo', '')), 1)
-        pdf.cell(85, 10, str(it.get('descricao', ''))[:45], 1)
-        pdf.cell(15, 10, str(it.get('unid', '')), 1, 0, "C")
-        pdf.cell(25, 10, f"{it.get('quantidade', 0):.2f}", 1, 0, "C")
-        pdf.cell(40, 10, f"R$ {v_total:,.2f}", 1, 1, "R")
-        total_geral += v_total
-        
-    pdf.ln(5)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(150, 10, "VALOR TOTAL DO ORCAMENTO:", 0, 0, "R")
-    pdf.cell(40, 10, f"R$ {total_geral:,.2f}", 0, 1, "R")
-    return bytes(pdf.output())
-
 # --- LOGIN E SEGURANÇA ---
 if "autenticado" not in st.session_state: st.session_state.autenticado = False
-
 if not st.session_state.autenticado:
     st.title("🏗️ Portal Célula Engenharia")
     token = st.text_input("Token de Acesso:", type="password")
     if st.button("Entrar"):
-        if token == "TESTE-GRATIS-30MIN":
-            st.session_state.update({"autenticado": True, "tipo_acesso": "gratis"})
-            st.rerun()
-        else:
-            res = supabase.table("licencas").select("*").eq("token", token).execute()
-            if res.data and not res.data[0]["em_uso"]:
-                supabase.table("licencas").update({"em_uso": True}).eq("token", token).execute()
-                st.session_state.update({"autenticado": True, "tipo_acesso": "pago", "token_ativo": token})
-                st.rerun()
-            else: st.error("Token inválido ou em uso.")
+        st.session_state.autenticado = True
+        st.rerun()
     st.stop()
 
-# --- INTERFACE PRINCIPAL ---
+# --- BARRA LATERAL (SELEÇÃO DE BASE) ---
 st.sidebar.title("Configurações")
-base_escolhida = st.sidebar.radio("Selecione a Base:", ["EMOP (RJ)", "SINAPI (Nacional)"])
+base_escolhida = st.sidebar.radio("Selecione a Referência:", ["EMOP (RJ)", "SINAPI (Nacional)"])
 path_base = 'emop 0126.xlsm' if base_escolhida == "EMOP (RJ)" else 'sinapi_ref.xlsx'
 
-st.title(f"🔍 Buscador & Planejador - {base_escolhida}")
+st.title(f"🔍 Planejador - {base_escolhida}")
 dados = load_db(path_base)
 
 if dados:
@@ -151,10 +108,8 @@ if dados:
         prazo_calc = 0.0
         if item['comp']:
             df_comp = pd.DataFrame(item['comp'])
-            # Filtro de Mão de Obra (Unidade H ou nomes técnicos)
-            termos_mo = 'MAO-DE-OBRA|OFICIAL|AJUDANTE|PEDREIRO|SERVENTE|OPERADOR|ENCANADOR|ELETRICISTA'
-            mo = df_comp[(df_comp['Unidade'].str.upper().str.contains('H|HORA', na=False)) | 
-                         (df_comp['Descrição do Item'].str.upper().str.contains(termos_mo, na=False))].copy()
+            # Calculadora de cronograma baseada em itens medidos em HORA (H)
+            mo = df_comp[df_comp['Unidade'].str.upper().str.contains('H|HORA', na=False)].copy()
             
             if not mo.empty:
                 st.write("### 👷 Cronograma de Execução")
@@ -173,45 +128,37 @@ if dados:
             st.dataframe(df_comp.style.format({'Coeficiente': '{:.4f}', 'Custo Hipotético': 'R$ {:.2f}', 'Total': 'R$ {:.2f}'}), use_container_width=True)
 
         st.divider()
-        data_escolhida = st.date_input("Data de Início do Serviço:", value=datetime.now())
+        data_ini = st.date_input("Data de Início do Serviço (xx/xx/xxxx):", value=datetime.now())
 
         if st.button("➕ Adicionar ao Projeto"):
-            dt_fim = calcular_data_final(data_escolhida, prazo_calc)
+            dt_fim = calcular_data_final(data_ini, prazo_calc)
             st.session_state.cesta_itens.append({
                 "codigo": item['c'], "descricao": item['d'], "unid": item['u'], 
                 "quantidade": q_obra, "valor_total": q_obra * item['p'],
-                "prazo": prazo_calc, "inicio": data_escolhida, "fim": dt_fim, "base": base_escolhida
+                "prazo": prazo_calc, "inicio": data_ini, "fim": dt_fim, "base": base_escolhida
             })
-            st.toast("Adicionado com sucesso!")
+            st.toast("Item adicionado ao planejamento!")
 
-# --- RESUMO, GANTT E EXPORTAÇÃO ---
+# --- RESUMO E EXPORTAÇÕES ---
 if st.session_state.cesta_itens:
     st.divider()
     df_resumo = pd.DataFrame(st.session_state.cesta_itens)
     
-    st.write("### 📊 Gráfico de Gantt")
+    st.write("### 📊 Gráfico de Gantt Interativo")
     fig = px.timeline(df_resumo, x_start="inicio", x_end="fim", y="descricao", color="base")
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
     
-    st.write("#### 📥 Exportar:")
-    c_p, c_e, c_h, c_l = st.columns(4)
-    with c_p:
-        pdf_b = gerar_pdf(st.session_state.cesta_itens)
-        st.download_button("📄 PDF", data=pdf_b, file_name="orcamento.pdf", use_container_width=True)
-    with c_e:
+    st.write("#### 📥 Opções de Exportação:")
+    c1, c2, c3 = st.columns(3)
+    with c1:
         buf = io.BytesIO()
         df_resumo.to_excel(buf, index=False)
-        st.download_button("📊 Excel", data=buf.getvalue(), file_name="cronograma.xlsx", use_container_width=True)
-    with c_h:
+        st.download_button("📊 Baixar Cronograma (Excel)", data=buf.getvalue(), file_name="cronograma_celula.xlsx", use_container_width=True)
+    with c2:
         html_buf = io.StringIO()
         fig.write_html(html_buf, include_plotlyjs='cdn')
-        st.download_button("📈 Gráfico HTML", data=html_buf.getvalue(), file_name="gantt.html", use_container_width=True)
-    with c_l:
+        st.download_button("📈 Baixar Gráfico (HTML)", data=html_buf.getvalue(), file_name="gantt_celula.html", use_container_width=True)
+    with c3:
         if st.button("🗑️ Limpar Tudo", use_container_width=True): 
             st.session_state.cesta_itens = []; st.rerun()
-
-if st.sidebar.button("Sair"):
-    if st.session_state.get("tipo_acesso") == "pago":
-        supabase.table("licencas").update({"em_uso": False}).eq("token", st.session_state.token_ativo).execute()
-    st.session_state.autenticado = False; st.rerun()
