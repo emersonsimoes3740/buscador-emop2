@@ -22,63 +22,67 @@ if "cesta_itens" not in st.session_state:
 # --- FUNÇÕES DE TRATAMENTO ---
 
 def limpar_valor(valor):
-    if pd.isna(valor) or valor == "":
-        return 0.0
+    if pd.isna(valor) or valor == "": return 0.0
     try:
         if isinstance(valor, str):
             valor = valor.replace('R$', '').replace('.', '').replace(',', '.').strip()
         return float(valor)
-    except:
-        return 0.0
+    except: return 0.0
 
 @st.cache_data
 def load_db(path):
-    if not os.path.exists(path): 
-        return None
+    if not os.path.exists(path): return None
     try:
         df = pd.read_excel(path)
-        
-        if "emop" in path.lower():
-            if len(df.columns) >= 7:
-                df = df.iloc[:, :7]
-                df.columns = ['Código', 'Descrição do Item', 'Unidade', 'Coeficiente', 'Custo Hipotético', 'PC', 'T']
-        
         df.columns = [str(c).strip() for c in df.columns]
-        df['Custo Hipotético'] = df['Custo Hipotético'].apply(limpar_valor)
-        df['Coeficiente'] = df['Coeficiente'].apply(limpar_valor)
         
         db, pai = [], None
-        for _, r in df.iterrows():
-            cod = str(r['Código']).strip()
-            if pd.isna(r['Coeficiente']) or r['Coeficiente'] == 0:
-                pai = {
-                    'c': cod, 
-                    'd': str(r['Descrição do Item']).strip(), 
-                    'u': str(r['Unidade']).strip(),
-                    'p': float(r['Custo Hipotético']), 
-                    'comp': []
-                }
-                db.append(pai)
-            elif pai:
-                pai['comp'].append({
-                    'Código': cod, 
-                    'Descrição do Item': str(r['Descrição do Item']).strip(), 
-                    'Unidade': str(r['Unidade']).strip(),
-                    'Coeficiente': float(r['Coeficiente']), 
-                    'Custo Hipotético': float(r['Custo Hipotético'])
-                })
+
+        # --- LÓGICA ESPECÍFICA PARA EMOP ---
+        if "emop" in path.lower():
+            # Na EMOP 0126, geralmente as colunas são: Código, Descrição, Unidade, Coeficiente, Preço...
+            for _, r in df.iterrows():
+                cod = str(r.iloc[0]).strip()
+                # Item PAI na EMOP: Geralmente tem código mas o coeficiente (coluna 3 ou 4) é nulo
+                if pd.isna(r.iloc[3]) or r.iloc[3] == 0:
+                    pai = {
+                        'c': cod, 
+                        'd': str(r.iloc[1]).strip(), 
+                        'u': str(r.iloc[2]).strip(),
+                        'p': limpar_valor(r.iloc[4]), 
+                        'comp': []
+                    }
+                    db.append(pai)
+                elif pai:
+                    pai['comp'].append({
+                        'Código': cod, 
+                        'Descrição do Item': str(r.iloc[1]).strip(), 
+                        'Unidade': str(r.iloc[2]).strip(),
+                        'Coeficiente': limpar_valor(r.iloc[3]), 
+                        'Custo Hipotético': limpar_valor(r.iloc[4])
+                    })
+
+        # --- LÓGICA ESPECÍFICA PARA SINAPI (Já está perfeita) ---
+        else:
+            for _, r in df.iterrows():
+                cod = str(r['Código']).strip()
+                if pd.isna(r['Coeficiente']) or r['Coeficiente'] == 0:
+                    pai = {'c': cod, 'd': str(r['Descrição do Item']), 'u': str(r['Unidade']),
+                           'p': limpar_valor(r['Custo Hipotético']), 'comp': []}
+                    db.append(pai)
+                elif pai:
+                    pai['comp'].append({'Código': cod, 'Descrição do Item': str(r['Descrição do Item']),
+                                       'Unidade': str(r['Unidade']), 'Coeficiente': r['Coeficiente'],
+                                       'Custo Hipotético': r['Custo Hipotético']})
         return db
     except Exception as e:
-        st.error(f"Erro ao processar a base {path}: {e}")
+        st.error(f"Erro ao processar {path}: {e}")
         return None
 
 def calcular_data_final(data_inicio, dias_uteis):
     try:
-        if isinstance(data_inicio, datetime): data_inicio = data_inicio.date()
         inicio_np = np.datetime64(data_inicio)
-        dias_int = int(np.ceil(dias_uteis))
-        offset = int(max(0, dias_int - 1))
-        fim_np = np.busday_offset(inicio_np, offset, roll='forward')
+        fim_np = np.busday_offset(inicio_np, int(np.ceil(dias_uteis)), roll='forward')
         return pd.to_datetime(fim_np)
     except: return pd.to_datetime(data_inicio)
 
@@ -93,12 +97,11 @@ if not st.session_state.autenticado:
     st.stop()
 
 # --- INTERFACE ---
-st.sidebar.title("Configurações de Base")
+st.sidebar.title("Configurações")
 base_escolhida = st.sidebar.radio("Base Atual:", ["EMOP (RJ)", "SINAPI (Nacional)"])
 path_base = 'emop 0126.xlsm' if base_escolhida == "EMOP (RJ)" else 'sinapi_ref.xlsx'
 
 st.title(f"🔍 Planejador - {base_escolhida}")
-
 dados = load_db(path_base)
 
 if dados:
@@ -109,78 +112,54 @@ if dados:
         item = next(i for i in dados if i['c'] == selecao.split(" | ")[0])
         st.subheader(f"📍 {item['c']} - {item['d']}")
         
-        c1, c2, c3 = st.columns(3)
-        with c1: q_obra = st.number_input(f"Quantidade ({item['u']}):", min_value=0.01, value=1.0)
-        with c2: jornada = st.number_input("Jornada (h/dia):", min_value=1.0, value=8.0)
-        with c3: st.metric("VALOR TOTAL", f"R$ {q_obra * item['p']:,.2f}")
+        col1, col2, col3 = st.columns(3)
+        with col1: q_obra = st.number_input(f"Quantidade ({item['u']}):", min_value=0.01, value=1.0)
+        with col2: jornada = st.number_input("Jornada (h/dia):", min_value=1.0, value=8.0)
+        with col3: st.metric("VALOR TOTAL", f"R$ {q_obra * item['p']:,.2f}")
         
         prazo_calc = 0.0
         if item['comp']:
             df_comp = pd.DataFrame(item['comp'])
             
-            # --- CALCULADORA HÍBRIDA (MELHORADA) ---
-            # Filtra por Unidade 'H' OU palavras-chave de mão de obra
-            termos_mo = 'MAO-DE-OBRA|OFICIAL|AJUDANTE|PEDREIRO|SERVENTE|ARMADOR|CARPINTEIRO|PINTOR|ELETRICISTA|ENCANADOR'
+            # --- CALCULADORA DE CRONOGRAMA (HÍBRIDA) ---
+            # Identifica Mão de Obra por Unidade 'H' ou palavras-chave (Pedreiro, Servente, etc)
+            termos_mo = 'MAO-DE-OBRA|OFICIAL|AJUDANTE|PEDREIRO|SERVENTE|ARMADOR|CARPINTEIRO|PINTOR|ELETRICISTA|ENCANADOR|OPERADOR'
             mo = df_comp[
-                (df_comp['Unidade'].str.upper() == 'H') | 
+                (df_comp['Unidade'].str.upper().str.contains('H|HORA', na=False)) | 
                 (df_comp['Descrição do Item'].str.upper().str.contains(termos_mo, na=False))
             ].copy()
             
             if not mo.empty:
-                st.write("### 👷 Cronograma Estimado (Mão de Obra)")
-                cols = st.columns(min(len(mo), 4))
-                prazos_mo = []
+                st.write("### 👷 Cronograma Estimado")
+                c_mo = st.columns(min(len(mo), 3))
+                prazos = []
                 for idx, (i, r) in enumerate(mo.iterrows()):
-                    with cols[idx % 4]:
-                        nome = str(r['Descrição do Item']).split()[:2]
-                        # Chave única para evitar conflitos no Streamlit
-                        n_h = st.number_input(f"Nº de {' '.join(nome)}:", min_value=1, value=1, key=f"n_{idx}_{item['c']}")
-                        p_serv = (float(r['Coeficiente']) * q_obra) / (jornada * n_h)
-                        prazos_mo.append(p_serv)
-                        st.write(f"⏱️ **{p_serv:.2f} dias**")
-                
-                prazo_calc = max(prazos_mo) if prazos_mo else 0.0
+                    with c_mo[idx % 3]:
+                        n_p = st.number_input(f"{str(r['Descrição do Item'])[:20]}:", min_value=1, value=1, key=f"n_{idx}")
+                        p = (float(r['Coeficiente']) * q_obra) / (jornada * n_p)
+                        prazos.append(p)
+                        st.write(f"⏱️ {p:.2f} dias")
+                prazo_calc = max(prazos) if prazos else 0.0
 
-            st.write("### 📋 Composição Detalhada")
+            st.write("### 📋 Insumos da Composição")
             df_comp['Total'] = df_comp['Coeficiente'] * q_obra * df_comp['Custo Hipotético']
             st.dataframe(df_comp.style.format({'Coeficiente': '{:.4f}', 'Custo Hipotético': 'R$ {:.2f}', 'Total': 'R$ {:.2f}'}), use_container_width=True)
 
-        st.write("---")
-        data_ini = st.date_input("Início deste serviço:", value=datetime.now())
-
-        if st.button("➕ Adicionar ao Cronograma"):
-            dt_fim = calcular_data_final(data_ini, prazo_calc)
+        st.divider()
+        data_ini = st.date_input("Data de Início:", value=datetime.now())
+        if st.button("➕ Adicionar ao Projeto"):
             st.session_state.cesta_itens.append({
                 "codigo": item['c'], "descricao": item['d'], "unid": item['u'], 
-                "quantidade": float(q_obra), "valor_total": float(q_obra * item['p']),
-                "prazo": float(prazo_calc), "inicio": data_ini, "fim": dt_fim, "base": base_escolhida
+                "quantidade": q_obra, "valor_total": q_obra * item['p'],
+                "prazo": prazo_calc, "inicio": data_ini, "fim": calcular_data_final(data_ini, prazo_calc), "base": base_escolhida
             })
-            st.toast("Adicionado com sucesso!")
+            st.toast("Item adicionado!")
 
-# --- GANTT E EXPORTAÇÃO ---
+# --- GANTT ---
 if st.session_state.cesta_itens:
-    st.divider()
-    df_resumo = pd.DataFrame(st.session_state.cesta_itens)
-    df_resumo['inicio_dt'] = pd.to_datetime(df_resumo['inicio'])
-    df_resumo['fim_dt'] = pd.to_datetime(df_resumo['fim'])
-    
-    st.write("### 📊 Gráfico de Gantt")
-    fig = px.timeline(df_resumo, x_start="inicio_dt", x_end="fim_dt", y="descricao", color="base")
+    df_res = pd.DataFrame(st.session_state.cesta_itens)
+    st.write("### 📊 Cronograma (Gantt)")
+    fig = px.timeline(df_res, x_start="inicio", x_end="fim", y="descricao", color="base")
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
-    
-    col_xl, col_html, col_limpar = st.columns(3)
-    with col_xl:
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-            df_resumo.drop(columns=['inicio_dt', 'fim_dt']).to_excel(writer, index=False)
-        st.download_button("📊 Baixar Excel", data=buf.getvalue(), file_name="cronograma.xlsx", use_container_width=True)
-    
-    with col_html:
-        html_buf = io.StringIO()
-        fig.write_html(html_buf, include_plotlyjs='cdn')
-        st.download_button("📈 Baixar Gráfico (HTML)", data=html_buf.getvalue(), file_name="gantt.html", use_container_width=True)
-
-    with col_limpar:
-        if st.button("🗑️ Limpar Tudo", use_container_width=True): 
-            st.session_state.cesta_itens = []; st.rerun()
+    if st.button("🗑️ Limpar Lista"): st.session_state.cesta_itens = []; st.rerun()
