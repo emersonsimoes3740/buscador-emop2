@@ -20,7 +20,6 @@ if "cesta_itens" not in st.session_state:
     st.session_state.cesta_itens = []
 
 # --- FUNÇÕES DE SUPORTE ---
-
 def limpar_valor(valor):
     """Trata strings brasileiras (ex: 6,23) para conversão em float."""
     if pd.isna(valor) or valor == "": return 0.0
@@ -38,11 +37,10 @@ def load_db(path):
         df.columns = [str(c).strip() for c in df.columns]
         db, pai = [], None
 
-        # Diferenciação de leitura entre EMOP e SINAPI
         if "emop" in path.lower():
             for _, r in df.iterrows():
                 cod = str(r.iloc[0]).strip()
-                # Item PAI (Serviço) identificado pela falta de coeficiente na coluna 4
+                # Item PAI na EMOP (Coluna de coeficiente vazia)
                 if pd.isna(r.iloc[3]) or r.iloc[3] == 0:
                     pai = {'c': cod, 'd': str(r.iloc[1]).strip(), 'u': str(r.iloc[2]).strip(),
                            'p': limpar_valor(r.iloc[4]), 'comp': []}
@@ -51,7 +49,7 @@ def load_db(path):
                     pai['comp'].append({'Código': cod, 'Descrição do Item': str(r.iloc[1]).strip(),
                                         'Unidade': str(r.iloc[2]).strip(), 'Coeficiente': limpar_valor(r.iloc[3]),
                                         'Custo Hipotético': limpar_valor(r.iloc[4])})
-        else: # Lógica para SINAPI formatada
+        else: # SINAPI
             for _, r in df.iterrows():
                 cod = str(r['Código']).strip()
                 if pd.isna(r['Coeficiente']) or r['Coeficiente'] == 0:
@@ -64,7 +62,7 @@ def load_db(path):
                                        'Custo Hipotético': limpar_valor(r['Custo Hipotético'])})
         return db
     except Exception as e:
-        st.error(f"Erro ao carregar banco: {e}")
+        st.error(f"Erro no banco: {e}")
         return None
 
 def calcular_data_final(data_inicio, dias_uteis):
@@ -74,7 +72,7 @@ def calcular_data_final(data_inicio, dias_uteis):
         return pd.to_datetime(fim_np)
     except: return pd.to_datetime(data_inicio)
 
-# --- LOGIN E SEGURANÇA ---
+# --- LOGIN ---
 if "autenticado" not in st.session_state: st.session_state.autenticado = False
 if not st.session_state.autenticado:
     st.title("🏗️ Portal Célula Engenharia")
@@ -84,9 +82,9 @@ if not st.session_state.autenticado:
         st.rerun()
     st.stop()
 
-# --- BARRA LATERAL (SELEÇÃO DE BASE) ---
-st.sidebar.title("Configurações")
-base_escolhida = st.sidebar.radio("Selecione a Referência:", ["EMOP (RJ)", "SINAPI (Nacional)"])
+# --- INTERFACE ---
+st.sidebar.title("Bases de Dados")
+base_escolhida = st.sidebar.radio("Selecione:", ["EMOP (RJ)", "SINAPI (Nacional)"])
 path_base = 'emop 0126.xlsm' if base_escolhida == "EMOP (RJ)" else 'sinapi_ref.xlsx'
 
 st.title(f"🔍 Planejador - {base_escolhida}")
@@ -108,27 +106,29 @@ if dados:
         prazo_calc = 0.0
         if item['comp']:
             df_comp = pd.DataFrame(item['comp'])
-            # Calculadora de cronograma baseada em itens medidos em HORA (H)
-            mo = df_comp[df_comp['Unidade'].str.upper().str.contains('H|HORA', na=False)].copy()
+            # Filtro de cronograma híbrido
+            termos_mo = 'MAO-DE-OBRA|OFICIAL|AJUDANTE|PEDREIRO|SERVENTE|OPERADOR|ENCANADOR|ELETRICISTA'
+            mo = df_comp[(df_comp['Unidade'].str.upper().str.contains('H|HORA', na=False)) | 
+                         (df_comp['Descrição do Item'].str.upper().str.contains(termos_mo, na=False))].copy()
             
             if not mo.empty:
-                st.write("### 👷 Cronograma de Execução")
-                cols_mo = st.columns(min(len(mo), 3))
+                st.write("### 👷 Cronograma Estimado")
+                cols = st.columns(min(len(mo), 3))
                 prazos_lista = []
                 for idx, (i, r) in enumerate(mo.iterrows()):
-                    with cols_mo[idx % 3]:
-                        n_p = st.number_input(f"{str(r['Descrição do Item'])[:20]}:", min_value=1, value=1, key=f"n_{idx}")
+                    with cols[idx % 3]:
+                        n_p = st.number_input(f"{str(r['Descrição do Item'])[:20]}:", min_value=1, value=1, key=f"n_{idx}_{item['c']}")
                         p = (float(r['Coeficiente']) * q_obra) / (jornada * n_p)
                         prazos_lista.append(p)
                         st.write(f"⏱️ {p:.2f} dias")
                 prazo_calc = max(prazos_lista) if prazos_lista else 0.0
 
-            st.write("### 📋 Composição e Insumos")
+            st.write("### 📋 Insumos")
             df_comp['Total'] = df_comp['Coeficiente'] * q_obra * df_comp['Custo Hipotético']
             st.dataframe(df_comp.style.format({'Coeficiente': '{:.4f}', 'Custo Hipotético': 'R$ {:.2f}', 'Total': 'R$ {:.2f}'}), use_container_width=True)
 
         st.divider()
-        data_ini = st.date_input("Data de Início do Serviço (xx/xx/xxxx):", value=datetime.now())
+        data_ini = st.date_input("Início do Serviço:", value=datetime.now())
 
         if st.button("➕ Adicionar ao Projeto"):
             dt_fim = calcular_data_final(data_ini, prazo_calc)
@@ -137,28 +137,16 @@ if dados:
                 "quantidade": q_obra, "valor_total": q_obra * item['p'],
                 "prazo": prazo_calc, "inicio": data_ini, "fim": dt_fim, "base": base_escolhida
             })
-            st.toast("Item adicionado ao planejamento!")
+            st.toast("Item adicionado!")
 
-# --- RESUMO E EXPORTAÇÕES ---
+# --- GANTT E EXPORTAÇÃO ---
 if st.session_state.cesta_itens:
     st.divider()
     df_resumo = pd.DataFrame(st.session_state.cesta_itens)
-    
-    st.write("### 📊 Gráfico de Gantt Interativo")
+    st.write("### 📊 Gráfico de Gantt")
     fig = px.timeline(df_resumo, x_start="inicio", x_end="fim", y="descricao", color="base")
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
     
-    st.write("#### 📥 Opções de Exportação:")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        buf = io.BytesIO()
-        df_resumo.to_excel(buf, index=False)
-        st.download_button("📊 Baixar Cronograma (Excel)", data=buf.getvalue(), file_name="cronograma_celula.xlsx", use_container_width=True)
-    with c2:
-        html_buf = io.StringIO()
-        fig.write_html(html_buf, include_plotlyjs='cdn')
-        st.download_button("📈 Baixar Gráfico (HTML)", data=html_buf.getvalue(), file_name="gantt_celula.html", use_container_width=True)
-    with c3:
-        if st.button("🗑️ Limpar Tudo", use_container_width=True): 
-            st.session_state.cesta_itens = []; st.rerun()
+    if st.button("🗑️ Limpar Tudo"): 
+        st.session_state.cesta_itens = []; st.rerun()
