@@ -1,7 +1,5 @@
 pandas
 streamlit
 supabase
-fpdf2
+fpdf
 openpyxl
-numpy
-plotly
