@@ -22,7 +22,6 @@ if "cesta_itens" not in st.session_state:
 # --- FUNÇÕES DE TRATAMENTO ---
 
 def limpar_valor(valor):
-    """Converte strings brasileiras (6,23) para float (6.23) limpando resíduos."""
     if pd.isna(valor) or valor == "":
         return 0.0
     try:
@@ -39,7 +38,6 @@ def load_db(path):
     try:
         df = pd.read_excel(path)
         
-        # Ajuste para base EMOP por posição de coluna
         if "emop" in path.lower():
             if len(df.columns) >= 7:
                 df = df.iloc[:, :7]
@@ -99,7 +97,6 @@ st.sidebar.title("Configurações de Base")
 base_escolhida = st.sidebar.radio("Base Atual:", ["EMOP (RJ)", "SINAPI (Nacional)"])
 path_base = 'emop 0126.xlsm' if base_escolhida == "EMOP (RJ)" else 'sinapi_ref.xlsx'
 
-# LINHA CORRIGIDA (109)
 st.title(f"🔍 Planejador - {base_escolhida}")
 
 dados = load_db(path_base)
@@ -121,8 +118,13 @@ if dados:
         if item['comp']:
             df_comp = pd.DataFrame(item['comp'])
             
-            # Calculadora de Cronograma baseada em 'H' (Hora)
-            mo = df_comp[df_comp['Unidade'].str.upper() == 'H'].copy()
+            # --- CALCULADORA HÍBRIDA (MELHORADA) ---
+            # Filtra por Unidade 'H' OU palavras-chave de mão de obra
+            termos_mo = 'MAO-DE-OBRA|OFICIAL|AJUDANTE|PEDREIRO|SERVENTE|ARMADOR|CARPINTEIRO|PINTOR|ELETRICISTA|ENCANADOR'
+            mo = df_comp[
+                (df_comp['Unidade'].str.upper() == 'H') | 
+                (df_comp['Descrição do Item'].str.upper().str.contains(termos_mo, na=False))
+            ].copy()
             
             if not mo.empty:
                 st.write("### 👷 Cronograma Estimado (Mão de Obra)")
@@ -131,6 +133,7 @@ if dados:
                 for idx, (i, r) in enumerate(mo.iterrows()):
                     with cols[idx % 4]:
                         nome = str(r['Descrição do Item']).split()[:2]
+                        # Chave única para evitar conflitos no Streamlit
                         n_h = st.number_input(f"Nº de {' '.join(nome)}:", min_value=1, value=1, key=f"n_{idx}_{item['c']}")
                         p_serv = (float(r['Coeficiente']) * q_obra) / (jornada * n_h)
                         prazos_mo.append(p_serv)
