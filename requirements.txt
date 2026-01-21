@@ -4,3 +4,4 @@ supabase
 openpyxl
 xlsxwriter
 fpdf
+plotly
