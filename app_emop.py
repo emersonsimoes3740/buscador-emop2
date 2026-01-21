@@ -58,18 +58,21 @@ def gerar_pdf(itens):
     total_geral = 0
     pdf.set_font("Helvetica", "", 8)
     for it in itens:
-        # Uso de .get() para evitar novos KeyErrors no PDF
+        # Recuperação segura de valores
+        v_total = float(it.get('valor_total', 0))
+        qtd = float(it.get('quantidade', 0))
+        
         pdf.cell(25, 10, str(it.get('codigo', '')), 1)
         pdf.cell(85, 10, str(it.get('descricao', ''))[:45], 1)
         pdf.cell(15, 10, str(it.get('unid', '')), 1, 0, "C")
-        pdf.cell(25, 10, f"{it.get('quantidade', 0):.2f}", 1, 0, "C")
-        pdf.cell(40, 10, f"{it.get('valor_total', 0):,2f}", 1, 1, "R")
-        total_geral += it.get('valor_total', 0)
+        pdf.cell(25, 10, f"{qtd:.2f}", 1, 0, "C")
+        pdf.cell(40, 10, f"{v_total:.2f}", 1, 1, "R") # Correção do ValueError aqui
+        total_geral += v_total
         
     pdf.ln(5)
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(150, 10, "VALOR TOTAL DO ORCAMENTO:", 0, 0, "R")
-    pdf.cell(40, 10, f"R$ {total_geral:,.2f}", 0, 1, "R")
+    pdf.cell(40, 10, f"R$ {total_geral:.2f}", 0, 1, "R")
     return bytes(pdf.output())
 
 # --- LOGIN E SEGURANÇA ---
@@ -130,29 +133,31 @@ if dados:
         if st.button("➕ Adicionar ao Relatório PDF"):
             st.session_state.cesta_itens.append({
                 "codigo": item['c'], "descricao": item['d'], "unid": item['u'], 
-                "quantidade": q_obra, "valor_total": q_obra * item['p']
+                "quantidade": float(q_obra), "valor_total": float(q_obra * item['p'])
             })
             st.toast("Adicionado!")
 
-# --- RESUMO E PDF (CORRIGIDO PARA EVITAR KEYERROR) ---
+# --- RESUMO E PDF ---
 if st.session_state.cesta_itens:
     st.divider()
     st.write("### 📋 Resumo do Orçamento")
     df_resumo = pd.DataFrame(st.session_state.cesta_itens)
     
-    # Verificação de colunas existentes para evitar erro se houver lixo no cache
     colunas_desejadas = ['codigo', 'descricao', 'unid', 'quantidade', 'valor_total']
     colunas_presentes = [c for c in colunas_desejadas if c in df_resumo.columns]
     
     st.dataframe(df_resumo[colunas_presentes], use_container_width=True)
     
-    if st.download_button("📥 Baixar PDF", data=gerar_pdf(st.session_state.cesta_itens), file_name="orcamento_celula.pdf"):
-        st.success("Gerado!")
+    try:
+        pdf_bytes = gerar_pdf(st.session_state.cesta_itens)
+        st.download_button("📥 Baixar PDF", data=pdf_bytes, file_name="orcamento_celula.pdf")
+    except Exception as e:
+        st.error(f"Erro ao gerar PDF: {e}")
         
     if st.button("🗑️ Limpar Lista"): 
         st.session_state.cesta_itens = []; st.rerun()
 
-# Logout e Trava de tempo
+# Logout
 if st.sidebar.button("Sair"):
     if st.session_state.get("tipo_acesso") == "pago":
         supabase.table("licencas").update({"em_uso": False}).eq("token", st.session_state.token_ativo).execute()
