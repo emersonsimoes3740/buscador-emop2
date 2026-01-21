@@ -44,23 +44,29 @@ def gerar_pdf(itens):
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(190, 10, f"Data: {time.strftime('%d/%m/%Y')} | Ref: EMOP 01/2026", 0, 1, "C")
     pdf.ln(10)
+    
+    # Cabeçalho da Tabela - Ajustado para incluir Quantidade
     pdf.set_fill_color(220, 220, 220)
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(30, 10, "Codigo", 1, 0, "C", True)
-    pdf.cell(100, 10, "Descricao", 1, 0, "C", True)
-    pdf.cell(20, 10, "Unid", 1, 0, "C", True)
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(25, 10, "Codigo", 1, 0, "C", True)
+    pdf.cell(85, 10, "Descricao", 1, 0, "C", True)
+    pdf.cell(15, 10, "Unid", 1, 0, "C", True)
+    pdf.cell(25, 10, "Qtd", 1, 0, "C", True)
     pdf.cell(40, 10, "Total (R$)", 1, 1, "C", True)
+    
     total_geral = 0
     pdf.set_font("Helvetica", "", 8)
     for it in itens:
-        pdf.cell(30, 10, str(it['codigo']), 1)
-        pdf.cell(100, 10, str(it['descricao'])[:55], 1)
-        pdf.cell(20, 10, str(it['unid']), 1, 0, "C")
+        pdf.cell(25, 10, str(it['codigo']), 1)
+        pdf.cell(85, 10, str(it['descricao'])[:45], 1)
+        pdf.cell(15, 10, str(it['unid']), 1, 0, "C")
+        pdf.cell(25, 10, f"{it['quantidade']:.2f}", 1, 0, "C")
         pdf.cell(40, 10, f"{it['valor_total']:,.2f}", 1, 1, "R")
         total_geral += it['valor_total']
+        
     pdf.ln(5)
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(150, 10, "TOTAL:", 0, 0, "R")
+    pdf.cell(150, 10, "VALOR TOTAL DO ORCAMENTO:", 0, 0, "R")
     pdf.cell(40, 10, f"R$ {total_geral:,.2f}", 0, 1, "R")
     return bytes(pdf.output())
 
@@ -100,7 +106,7 @@ if dados:
         c1, c2, c3 = st.columns(3)
         with c1: q_obra = st.number_input(f"Quantidade ({item['u']}):", min_value=0.01, value=1.0)
         with c2: jornada = st.number_input("Jornada (h/dia):", min_value=1.0, value=8.0)
-        with c3: st.metric("VALOR TOTAL", f"R$ {q_obra * item['p']:,.2f}")
+        with c3: st.metric("VALOR TOTAL ITEM", f"R$ {q_obra * item['p']:,.2f}")
         
         if item['comp']:
             df_comp = pd.DataFrame(item['comp'])
@@ -115,24 +121,40 @@ if dados:
                         n_h = st.number_input(f"Nº de {nome}:", min_value=1, value=1, key=f"n_{i}")
                         st.write(f"⏱️ **{(r['q'] * q_obra) / (jornada * n_h):.2f} dias**")
 
-            # 2. COMPOSIÇÃO DETALHADA (REINTEGRADA)
+            # 2. COMPOSIÇÃO DETALHADA
             st.write("### 📋 Composição e Insumos")
             df_comp['Total'] = df_comp['q'] * q_obra * df_comp['p']
             st.dataframe(df_comp.style.format({'q': '{:.4f}', 'p': 'R$ {:.2f}', 'Total': 'R$ {:.2f}'}), use_container_width=True)
 
         if st.button("➕ Adicionar ao Relatório PDF"):
-            st.session_state.cesta_itens.append({"codigo": item['c'], "descricao": item['d'], "unid": item['u'], "valor_total": q_obra * item['p']})
-            st.toast("Item adicionado!")
+            st.session_state.cesta_itens.append({
+                "codigo": item['c'], 
+                "descricao": item['d'], 
+                "unid": item['u'], 
+                "quantidade": q_obra,
+                "valor_total": q_obra * item['p']
+            })
+            st.toast("Item adicionado com quantidade!")
 
 # --- EXPORTAÇÃO PDF ---
 if st.session_state.cesta_itens:
     st.divider()
     st.write("### 📋 Resumo do Orçamento")
-    st.dataframe(pd.DataFrame(st.session_state.cesta_itens), use_container_width=True)
-    if st.download_button("📥 Baixar Orçamento PDF", data=gerar_pdf(st.session_state.cesta_itens), file_name="orcamento_celula.pdf", mime="application/pdf"):
-        st.success("PDF gerado!")
-    if st.button("🗑️ Limpar Lista"): st.session_state.cesta_itens = []; st.rerun()
+    # Exibe a tabela com a coluna de quantidade para conferência
+    df_resumo = pd.DataFrame(st.session_state.cesta_itens)
+    st.dataframe(df_resumo[['codigo', 'descricao', 'unid', 'quantidade', 'valor_total']], 
+                 use_container_width=True)
+    
+    if st.download_button("📥 Baixar Orçamento PDF Completo", 
+                          data=gerar_pdf(st.session_state.cesta_itens), 
+                          file_name="orcamento_celula_engenharia.pdf", 
+                          mime="application/pdf"):
+        st.success("PDF gerado com sucesso!")
+        
+    if st.button("🗑️ Limpar Lista"): 
+        st.session_state.cesta_itens = []; st.rerun()
 
+# Barra Lateral e Sair
 if st.sidebar.button("Sair"):
     if st.session_state.get("tipo_acesso") == "pago":
         supabase.table("licencas").update({"em_uso": False}).eq("token", st.session_state.token_ativo).execute()
