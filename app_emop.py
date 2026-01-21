@@ -27,16 +27,27 @@ def load_db(path):
         df = pd.read_excel(path)
         if len(df.columns) >= 7:
             df = df.iloc[:, :7]
-            df.columns = ['C','D','U','Q','P','PC','T']
+            # Atualização dos nomes das colunas conforme solicitado
+            df.columns = ['Código','Descrição do Item','Unidade','Coeficiente','Custo Hipotético','PC','T']
         db, pai = [], None
         for _, r in df.iterrows():
-            if pd.notna(r['C']) and pd.isna(r['Q']):
-                pai = {'c': str(r['C']), 'd': str(r['D']), 'u': str(r['U']),
-                       'p': float(r['P']) if pd.notna(r['P']) else 0.0, 'comp': []}
+            if pd.notna(r['Código']) and pd.isna(r['Coeficiente']):
+                pai = {
+                    'c': str(r['Código']), 
+                    'd': str(r['Descrição do Item']), 
+                    'u': str(r['Unidade']),
+                    'p': float(r['Custo Hipotético']) if pd.notna(r['Custo Hipotético']) else 0.0, 
+                    'comp': []
+                }
                 db.append(pai)
-            elif pd.notna(r['Q']) and pai:
-                pai['comp'].append({'c': str(r['C']), 'd': str(r['D']), 'u': str(r['U']),
-                                    'q': float(r['Q']), 'p': float(r['P']) if pd.notna(r['P']) else 0.0})
+            elif pd.notna(r['Coeficiente']) and pai:
+                pai['comp'].append({
+                    'Código': str(r['Código']), 
+                    'Descrição do Item': str(r['Descrição do Item']), 
+                    'Unidade': str(r['Unidade']),
+                    'Coeficiente': float(r['Coeficiente']), 
+                    'Custo Hipotético': float(r['Custo Hipotético']) if pd.notna(r['Custo Hipotético']) else 0.0
+                })
         return db
     except Exception: return None
 
@@ -63,11 +74,11 @@ def gerar_pdf(itens):
     
     pdf.set_fill_color(220, 220, 220)
     pdf.set_font("Helvetica", "B", 9)
-    pdf.cell(25, 10, "Codigo", 1, 0, "C", True)
-    pdf.cell(85, 10, "Descricao", 1, 0, "C", True)
+    pdf.cell(25, 10, "Código", 1, 0, "C", True)
+    pdf.cell(85, 10, "Descrição", 1, 0, "C", True)
     pdf.cell(15, 10, "Unid", 1, 0, "C", True)
     pdf.cell(25, 10, "Qtd", 1, 0, "C", True)
-    pdf.cell(40, 10, "Total (RS)", 1, 1, "C", True)
+    pdf.cell(40, 10, "Total (R$)", 1, 1, "C", True)
     
     total_geral = 0
     pdf.set_font("Helvetica", "", 8)
@@ -77,13 +88,13 @@ def gerar_pdf(itens):
         pdf.cell(85, 10, str(it.get('descricao', ''))[:45], 1)
         pdf.cell(15, 10, str(it.get('unid', '')), 1, 0, "C")
         pdf.cell(25, 10, f"{it.get('quantidade', 0):.2f}", 1, 0, "C")
-        pdf.cell(40, 10, f"RS {v_total:,.2f}", 1, 1, "R")
+        pdf.cell(40, 10, f"R$ {v_total:,.2f}", 1, 1, "R")
         total_geral += v_total
         
     pdf.ln(5)
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(150, 10, "VALOR TOTAL DO ORCAMENTO:", 0, 0, "R")
-    pdf.cell(40, 10, f"RS {total_geral:,.2f}", 0, 1, "R")
+    pdf.cell(150, 10, "VALOR TOTAL DO ORÇAMENTO:", 0, 0, "R")
+    pdf.cell(40, 10, f"R$ {total_geral:,.2f}", 0, 1, "R")
     return bytes(pdf.output())
 
 # --- LOGIN ---
@@ -116,30 +127,29 @@ if dados:
         with c3: st.metric("VALOR TOTAL", f"R$ {q_obra * item['p']:,.2f}")
         
         prazo_calc = 0.0
-        # RESTAURADO: Bloco de Composições e Cronograma
         if item['comp']:
             df_comp = pd.DataFrame(item['comp'])
             
             # 1. Seção de Cronograma (Mão de Obra)
-            mo = df_comp[(df_comp['u'].str.upper() == 'H') & (df_comp['d'].str.upper().str.contains('MAO-DE-OBRA', na=False))].copy()
+            mo = df_comp[(df_comp['Unidade'].str.upper() == 'H') & (df_comp['Descrição do Item'].str.upper().str.contains('MAO-DE-OBRA', na=False))].copy()
             if not mo.empty:
                 st.write("### 👷 Cronograma de Execução")
                 cols = st.columns(len(mo))
                 prazos_mo = []
                 for idx, (i, r) in enumerate(mo.iterrows()):
                     with cols[idx]:
-                        nome = " ".join(str(r['d']).upper().replace('MAO-DE-OBRA DE ', '').split()[:2])
+                        nome = " ".join(str(r['Descrição do Item']).upper().replace('MAO-DE-OBRA DE ', '').split()[:2])
                         n_h = st.number_input(f"Nº de {nome}:", min_value=1, value=1, key=f"n_{idx}_{item['c']}")
-                        p_serv = (float(r['q']) * q_obra) / (jornada * n_h)
+                        p_serv = (float(r['Coeficiente']) * q_obra) / (jornada * n_h)
                         prazos_mo.append(p_serv)
                         st.write(f"⏱️ **{p_serv:.2f} dias**")
                 prazo_calc = max(prazos_mo) if prazos_mo else 0.0
 
-            # 2. Seção de Insumos (Tabela Completa)
+            # 2. Seção de Insumos (Tabela com nomes corrigidos)
             st.write("### 📋 Composição e Insumos")
-            df_comp['Total'] = df_comp['q'] * q_obra * df_comp['p']
+            df_comp['Total'] = df_comp['Coeficiente'] * q_obra * df_comp['Custo Hipotético']
             st.dataframe(
-                df_comp.style.format({'q': '{:.4f}', 'p': 'R$ {:.2f}', 'Total': 'R$ {:.2f}'}), 
+                df_comp.style.format({'Coeficiente': '{:.4f}', 'Custo Hipotético': 'R$ {:.2f}', 'Total': 'R$ {:.2f}'}), 
                 use_container_width=True
             )
 
