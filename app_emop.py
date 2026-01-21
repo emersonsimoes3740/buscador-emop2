@@ -42,11 +42,17 @@ def load_db(path):
 
 def calcular_data_final_fixa(data_escolhida, dias_uteis):
     try:
+        # Garante formato de data para o numpy
         if isinstance(data_escolhida, datetime):
             data_escolhida = data_escolhida.date()
+        
         inicio_np = np.datetime64(data_escolhida)
         dias_int = int(np.ceil(dias_uteis))
+        
+        # Se o serviço durar 1 dia, termina no mesmo dia (offset 0)
+        # Se durar mais, pula os dias úteis correspondentes
         offset = int(max(0, dias_int - 1))
+        
         fim_np = np.busday_offset(inicio_np, offset, roll='forward')
         return pd.to_datetime(fim_np)
     except Exception:
@@ -86,7 +92,7 @@ def gerar_pdf(itens):
     pdf.cell(40, 10, f"RS {total_geral:,.2f}", 0, 1, "R")
     return bytes(pdf.output())
 
-# --- LOGIN (Simplificado para o script) ---
+# --- LOGIN E SEGURANÇA ---
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
@@ -94,12 +100,22 @@ if not st.session_state.autenticado:
     st.title("🏗️ Portal Célula Engenharia")
     token = st.text_input("Token de Acesso:", type="password")
     if st.button("Entrar"):
-        st.session_state.autenticado = True # Lógica simplificada
-        st.rerun()
+        if token == "TESTE-GRATIS-30MIN":
+            if "inicio_teste" not in st.session_state: st.session_state.inicio_teste = time.time()
+            st.session_state.autenticado, st.session_state.tipo_acesso = True, "gratis"
+            st.rerun()
+        else:
+            res = supabase.table("licencas").select("*").eq("token", token).execute()
+            if res.data and not res.data[0]["em_uso"]:
+                supabase.table("licencas").update({"em_uso": True}).eq("token", token).execute()
+                st.session_state.update({"autenticado": True, "tipo_acesso": "pago", "token_ativo": token})
+                st.rerun()
+            else: st.error("Token inválido ou em uso.")
     st.stop()
 
 # --- INTERFACE PRINCIPAL ---
 st.title("🔍 Buscador & Planejador EMOP")
+
 dados = load_db('emop 0126.xlsm')
 
 if dados:
@@ -133,60 +149,61 @@ if dados:
                 prazo_calc = max(prazos_mo) if prazos_mo else 0.0
 
         st.write("---")
+        # NOVO CAMPO DE DATA XX/XX/XXXX
         data_inicio_escolhida = st.date_input("Data de Início do Serviço:", value=datetime.now())
 
         if st.button("➕ Adicionar ao Relatório"):
             dt_end = calcular_data_final_fixa(data_inicio_escolhida, prazo_calc)
+            
             st.session_state.cesta_itens.append({
                 "codigo": item['c'], "descricao": item['d'], "unid": item['u'], 
                 "quantidade": float(q_obra), "valor_total": float(q_obra * item['p']),
                 "prazo_dias": float(prazo_calc), "inicio": data_inicio_escolhida, "fim": dt_end
             })
-            st.toast("Adicionado!")
+            st.toast("Serviço e data adicionados com sucesso!")
 
 # --- GANTT E EXPORTAÇÃO ---
 if st.session_state.cesta_itens:
     st.divider()
     df_resumo = pd.DataFrame(st.session_state.cesta_itens)
+    
+    st.write("### 📊 Gráfico de Gantt")
+    # Converte para datetime para o Plotly
     df_resumo['inicio_dt'] = pd.to_datetime(df_resumo['inicio'])
     df_resumo['fim_dt'] = pd.to_datetime(df_resumo['fim'])
     
-    st.write("### 📊 Gráfico de Gantt")
     fig = px.timeline(df_resumo, x_start="inicio_dt", x_end="fim_dt", y="descricao", color="codigo",
                       labels={"descricao": "Serviço"}, title="Cronograma Real da Obra")
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
     
-    st.write("#### 📥 Opções de Exportação:")
-    col_pdf, col_excel, col_gantt, col_limpar = st.columns(4)
+    st.write("#### 📥 Exportar:")
+    col_pdf, col_excel, col_limpar = st.columns(3)
     
     with col_pdf:
-        pdf_b = gerar_pdf(st.session_state.cesta_itens)
-        st.download_button("📄 Baixar PDF", data=pdf_b, file_name="orcamento.pdf", use_container_width=True)
+        try:
+            pdf_b = gerar_pdf(st.session_state.cesta_itens)
+            st.download_button("📄 Baixar PDF", data=pdf_b, file_name="orcamento.pdf", use_container_width=True)
+        except Exception as e: st.error(f"Erro PDF: {e}")
 
     with col_excel:
-        buf = io.BytesIO()
-        df_xl = df_resumo.copy()
-        df_xl['inicio'] = df_xl['inicio_dt'].dt.strftime('%d/%m/%Y')
-        df_xl['fim'] = df_xl['fim_dt'].dt.strftime('%d/%m/%Y')
-        df_xl = df_xl.drop(columns=['inicio_dt', 'fim_dt'])
-        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-            df_xl.to_excel(writer, index=False)
-        st.download_button("📊 Baixar Excel", data=buf.getvalue(), file_name="cronograma.xlsx", use_container_width=True)
-
-    # NOVO BOTÃO PARA EXPORTAR O GRÁFICO
-    with col_gantt:
-        html_buffer = io.StringIO()
-        fig.write_html(html_buffer, include_plotlyjs='cdn')
-        st.download_button(
-            label="📈 Baixar Gráfico (HTML)",
-            data=html_buffer.getvalue(),
-            file_name="grafico_gantt_celula.html",
-            mime="text/html",
-            use_container_width=True,
-            help="Baixa o gráfico interativo que pode ser aberto em qualquer navegador."
-        )
+        try:
+            buf = io.BytesIO()
+            df_xl = df_resumo.copy()
+            df_xl['inicio'] = df_xl['inicio_dt'].dt.strftime('%d/%m/%Y')
+            df_xl['fim'] = df_xl['fim_dt'].dt.strftime('%d/%m/%Y')
+            # Remove colunas auxiliares do plotly
+            df_xl = df_xl.drop(columns=['inicio_dt', 'fim_dt'])
+            with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+                df_xl.to_excel(writer, index=False)
+            st.download_button("📊 Baixar Excel", data=buf.getvalue(), file_name="cronograma.xlsx", use_container_width=True)
+        except Exception as e: st.error(f"Erro Excel: {e}")
 
     with col_limpar:
         if st.button("🗑️ Limpar Lista", use_container_width=True): 
             st.session_state.cesta_itens = []; st.rerun()
+
+if st.sidebar.button("Sair"):
+    if st.session_state.get("tipo_acesso") == "pago":
+        supabase.table("licencas").update({"em_uso": False}).eq("token", st.session_state.token_ativo).execute()
+    st.session_state.autenticado = False; st.rerun()
