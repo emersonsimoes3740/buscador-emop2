@@ -1,4 +1,6 @@
-fpdf2
 pandas
-openpyxl
+streamlit
 supabase
+fpdf2
+pdfplumber
+openpyxl
