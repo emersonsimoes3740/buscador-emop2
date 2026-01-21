@@ -16,7 +16,6 @@ supabase = create_client(url, key)
 
 st.set_page_config(page_title="Gestor EMOP - Eng. Emerson Simões", layout="wide")
 
-# Inicializa a cesta de itens se não existir
 if "cesta_itens" not in st.session_state:
     st.session_state.cesta_itens = []
 
@@ -42,14 +41,21 @@ def load_db(path):
     except Exception: return None
 
 def calcular_data_final(data_inicio, dias_uteis):
-    # Converte para numpy para ignorar Fins de Semana automaticamente
-    inicio_np = np.datetime64(data_inicio)
-    dias_int = int(np.ceil(dias_uteis))
-    if dias_int <= 1:
-        fim_np = np.busday_offset(inicio_np, 0, roll='forward')
-    else:
-        fim_np = np.busday_offset(inicio_np, dias_int - 1, roll='forward')
-    return pd.to_datetime(fim_np)
+    try:
+        # Garante formato de data para o numpy
+        if isinstance(data_inicio, datetime):
+            data_inicio = data_inicio.date()
+        
+        inicio_np = np.datetime64(data_inicio)
+        dias_int = int(np.ceil(dias_uteis))
+        
+        # Correção do erro: garante offset não negativo e tipo correto
+        offset = int(max(0, dias_int - 1))
+        
+        fim_np = np.busday_offset(inicio_np, offset, roll='forward')
+        return pd.to_datetime(fim_np)
+    except Exception:
+        return pd.to_datetime(data_inicio)
 
 def gerar_pdf(itens):
     pdf = FPDF()
@@ -60,7 +66,6 @@ def gerar_pdf(itens):
     pdf.cell(190, 10, f"Data: {time.strftime('%d/%m/%Y')} | Ref: EMOP 01/2026", 0, 1, "C")
     pdf.ln(10)
     
-    # Cabeçalho da Tabela
     pdf.set_fill_color(220, 220, 220)
     pdf.set_font("Helvetica", "B", 9)
     pdf.cell(25, 10, "Codigo", 1, 0, "C", True)
@@ -73,11 +78,10 @@ def gerar_pdf(itens):
     pdf.set_font("Helvetica", "", 8)
     for it in itens:
         v_total = float(it.get('valor_total', 0))
-        qtd = float(it.get('quantidade', 0))
         pdf.cell(25, 10, str(it.get('codigo', '')), 1)
         pdf.cell(85, 10, str(it.get('descricao', ''))[:45], 1)
         pdf.cell(15, 10, str(it.get('unid', '')), 1, 0, "C")
-        pdf.cell(25, 10, f"{qtd:.2f}", 1, 0, "C")
+        pdf.cell(25, 10, f"{it.get('quantidade', 0):.2f}", 1, 0, "C")
         pdf.cell(40, 10, f"RS {v_total:,.2f}", 1, 1, "R")
         total_geral += v_total
         
@@ -110,8 +114,6 @@ if not st.session_state.autenticado:
 
 # --- INTERFACE PRINCIPAL ---
 st.title("🔍 Buscador & Planejador EMOP")
-
-# Menu de Planejamento na Barra Lateral
 data_inicio_obra = st.sidebar.date_input("Início da Obra:", datetime.now())
 
 dados = load_db('emop 0126.xlsm')
@@ -129,7 +131,7 @@ if dados:
         with c2: jornada = st.number_input("Jornada (h/dia):", min_value=1.0, value=8.0)
         with c3: st.metric("VALOR TOTAL", f"R$ {q_obra * item['p']:,.2f}")
         
-        prazo_calculado = 0
+        prazo_calc = 0.0
         if item['comp']:
             df_comp = pd.DataFrame(item['comp'])
             mo = df_comp[(df_comp['u'].str.upper() == 'H') & (df_comp['d'].str.upper().str.contains('MAO-DE-OBRA', na=False))].copy()
@@ -141,81 +143,64 @@ if dados:
                     with cols[idx]:
                         nome = " ".join(str(r['d']).upper().replace('MAO-DE-OBRA DE ', '').split()[:2])
                         n_h = st.number_input(f"Nº de {nome}:", min_value=1, value=1, key=f"n_{i}")
-                        prazo_i = (r['q'] * q_obra) / (jornada * n_h)
-                        prazos_mo.append(prazo_i)
-                        st.write(f"⏱️ **{prazo_i:.2f} dias**")
-                prazo_calculado = max(prazos_mo) if prazos_mo else 0
+                        p_serv = (float(r['q']) * q_obra) / (jornada * n_h)
+                        prazos_mo.append(p_serv)
+                        st.write(f"⏱️ **{p_serv:.2f} dias**")
+                prazo_calc = max(prazos_mo) if prazos_mo else 0.0
 
             st.write("### 📋 Composição e Insumos")
             df_comp['Total'] = df_comp['q'] * q_obra * df_comp['p']
             st.dataframe(df_comp.style.format({'q': '{:.4f}', 'p': 'R$ {:.2f}', 'Total': 'R$ {:.2f}'}), use_container_width=True)
 
         st.write("---")
-        dia_inicio_relativo = st.number_input("Iniciar este serviço em qual dia da obra? (1 = Primeiro Dia)", min_value=1, value=1)
+        dia_inicio_rel = st.number_input("Dia de Início (1 = Primeiro Dia):", min_value=1, value=1)
 
-        if st.button("➕ Adicionar ao Relatório e Cronograma"):
-            # Calcula as datas reais
-            data_start = calcular_data_final(data_inicio_obra, dia_inicio_relativo)
-            data_end = calcular_data_final(data_start, prazo_calculado)
+        if st.button("➕ Adicionar ao Relatório"):
+            dt_start = calcular_data_final(data_inicio_obra, dia_inicio_rel)
+            dt_end = calcular_data_final(dt_start, prazo_calc)
             
             st.session_state.cesta_itens.append({
-                "codigo": item['c'], 
-                "descricao": item['d'], 
-                "unid": item['u'], 
-                "quantidade": float(q_obra), 
-                "valor_total": float(q_obra * item['p']),
-                "prazo_dias": prazo_calculado,
-                "inicio": data_start,
-                "fim": data_end
+                "codigo": item['c'], "descricao": item['d'], "unid": item['u'], 
+                "quantidade": float(q_obra), "valor_total": float(q_obra * item['p']),
+                "prazo_dias": float(prazo_calc), "inicio": dt_start, "fim": dt_end
             })
-            st.toast("Adicionado com sucesso!")
+            st.toast("Adicionado!")
 
-# --- RESUMO, GANTT E EXPORTAÇÃO ---
+# --- GANTT E EXPORTAÇÃO ---
 if st.session_state.cesta_itens:
     st.divider()
     df_resumo = pd.DataFrame(st.session_state.cesta_itens)
     
-    st.write("### 📋 Resumo do Orçamento e Cronograma")
-    st.dataframe(
-        df_resumo[['codigo', 'descricao', 'quantidade', 'valor_total', 'inicio', 'fim']].style.format({
-            'quantidade': '{:.2f}', 'valor_total': 'R$ {:,.2f}', 
-            'inicio': '{:%d/%m/%Y}', 'fim': '{:%d/%m/%Y}'
-        }), use_container_width=True
-    )
-    
-    # Gerar Gráfico de Gantt
     st.write("### 📊 Gráfico de Gantt")
     fig = px.timeline(df_resumo, x_start="inicio", x_end="fim", y="descricao", color="codigo",
-                      title="Sequenciamento da Obra", labels={"descricao": "Serviço"})
+                      labels={"descricao": "Serviço"}, title="Cronograma da Obra")
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
     
     st.write("#### 📥 Exportar:")
-    col_pdf, col_excel, col_limpar = st.columns([1, 1, 1])
+    col_pdf, col_excel, col_limpar = st.columns(3)
     
     with col_pdf:
         try:
-            pdf_bytes = gerar_pdf(st.session_state.cesta_itens)
-            st.download_button("📄 Baixar PDF", data=pdf_bytes, file_name="orcamento_celula.pdf", use_container_width=True)
+            pdf_b = gerar_pdf(st.session_state.cesta_itens)
+            st.download_button("📄 Baixar PDF", data=pdf_b, file_name="orcamento.pdf", use_container_width=True)
         except Exception as e: st.error(f"Erro PDF: {e}")
 
     with col_excel:
         try:
-            buffer = io.BytesIO()
-            # Remove objetos de data para o Excel aceitar melhor
-            df_export = df_resumo.copy()
-            df_export['inicio'] = df_export['inicio'].dt.strftime('%d/%m/%Y')
-            df_export['fim'] = df_export['fim'].dt.strftime('%d/%m/%Y')
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_export.to_excel(writer, index=False, sheet_name='Orcamento_Cronograma')
-            st.download_button("📊 Baixar Excel", data=buffer.getvalue(), file_name="orcamento_cronograma_celula.xlsx", use_container_width=True)
+            buf = io.BytesIO()
+            df_xl = df_resumo.copy()
+            df_xl['inicio'] = df_xl['inicio'].dt.strftime('%d/%m/%Y')
+            df_xl['fim'] = df_xl['fim'].dt.strftime('%d/%m/%Y')
+            with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+                df_xl.to_excel(writer, index=False)
+            st.download_button("📊 Baixar Excel", data=buf.getvalue(), file_name="cronograma.xlsx", use_container_width=True)
         except Exception as e: st.error(f"Erro Excel: {e}")
 
     with col_limpar:
-        if st.button("🗑️ Limpar Lista", use_container_width=True): 
+        if st.button("🗑️ Limpar Tudo", use_container_width=True): 
             st.session_state.cesta_itens = []; st.rerun()
 
-# Logout
 if st.sidebar.button("Sair"):
     if st.session_state.get("tipo_acesso") == "pago":
         supabase.table("licencas").update({"em_uso": False}).eq("token", st.session_state.token_ativo).execute()
