@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime
 import plotly.express as px
 
-# 1. CONEXÃO E CONFIGURAÇÃO (SUPABASE)
+# 1. CONEXÃO E CONFIGURAÇÃO
 try:
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
@@ -31,14 +31,21 @@ def limpar_valor(valor):
     except: return 0.0
 
 @st.cache_data
-def load_db(path):
+def load_db(path, tipo_base):
     if not os.path.exists(path): return None
     try:
+        # Carrega o Excel ignorando as primeiras linhas se for SINAPI (geralmente tem cabeçalho fixo)
         df = pd.read_excel(path)
         
-        # Forçamos a estrutura EMOP (7 colunas)
-        df = df.iloc[:, :7]
-        df.columns = ['C', 'D', 'U', 'Q', 'P', 'PC', 'T']
+        # AJUSTE DINÂMICO DE COLUNAS
+        if tipo_base == "EMOP (RJ)":
+            df = df.iloc[:, :7]
+            df.columns = ['C', 'D', 'U', 'Q', 'P', 'PC', 'T']
+        else:
+            # Lógica para SINAPI (Geralmente Código está na col 0, Desc na 1, Unid na 2, Coef na 3 e Preço na 4)
+            # Ajustamos para pegar as colunas principais do SINAPI
+            df = df.iloc[:, :5] 
+            df.columns = ['C', 'D', 'U', 'Q', 'P']
         
         db, pai = [], None
         for _, r in df.iterrows():
@@ -48,8 +55,12 @@ def load_db(path):
             coef = limpar_valor(r['Q'])
             preco = limpar_valor(r['P'])
 
-            # LÓGICA EMOP: Serviço Pai geralmente não tem coeficiente preenchido
-            if (pd.isna(r['Q']) or coef == 0) and cod != "nan" and desc != "nan":
+            # Se o código for igual ao anterior ou vazio, ignoramos
+            if cod == "nan" or desc == "nan": continue
+
+            # Lógica de Identificação Pai/Filho
+            # No SINAPI e EMOP, o PAI geralmente tem preço mas não tem coeficiente de composição na linha principal
+            if (pd.isna(r['Q']) or coef == 0 or coef == 1.0) and unid != "H" and unid != "h":
                 pai = {
                     'c': cod, 
                     'd': desc, 
@@ -58,8 +69,7 @@ def load_db(path):
                     'comp': []
                 }
                 db.append(pai)
-            # Item Filho (Insumo/Composição)
-            elif pai and coef > 0:
+            elif pai:
                 pai['comp'].append({
                     'Código': cod, 
                     'Descrição': desc, 
@@ -69,7 +79,7 @@ def load_db(path):
                 })
         return db
     except Exception as e:
-        st.error(f"Erro ao processar: {e}")
+        st.error(f"Erro ao processar base {tipo_base}: {e}")
         return None
 
 def calcular_data_final(data_inicio, dias_uteis):
@@ -81,7 +91,7 @@ def calcular_data_final(data_inicio, dias_uteis):
         return pd.to_datetime(fim_np)
     except: return pd.to_datetime(data_inicio)
 
-# --- LOGIN ---
+# --- LOGIN (Simplificado) ---
 if "autenticado" not in st.session_state: st.session_state.autenticado = False
 if not st.session_state.autenticado:
     st.title("🏗️ Portal Célula Engenharia")
@@ -94,10 +104,15 @@ if not st.session_state.autenticado:
 # --- INTERFACE ---
 st.sidebar.title("Configurações")
 base_escolhida = st.sidebar.radio("Base Atual:", ["EMOP (RJ)", "SINAPI"])
-path_base = 'emop 0126.xlsm' # Ajuste para o nome exato no seu GitHub
+
+# Define o arquivo correto baseado na escolha
+if base_escolhida == "EMOP (RJ)":
+    path_base = 'emop 0126.xlsm'
+else:
+    path_base = 'sinapi_ref.xlsx' # Certifique-se que o nome no GitHub está igual a este
 
 st.title(f"🔍 Planejador - {base_escolhida}")
-dados = load_db(path_base)
+dados = load_db(path_base, base_escolhida)
 
 if dados:
     lista_opcoes = [f"{i['c']} | {i['d']}" for i in dados]
@@ -116,32 +131,27 @@ if dados:
         if item['comp']:
             df_comp = pd.DataFrame(item['comp'])
             
-            # FILTRO DE MÃO DE OBRA (Unidade 'H' ou termos específicos)
+            # Filtro de Mão de Obra para Cronograma (Funciona para EMOP e SINAPI)
             mo = df_comp[
                 (df_comp['Unidade'].str.upper().str.contains('H', na=False)) |
-                (df_comp['Descrição'].str.upper().str.contains('OFICIAL|AJUDANTE|PEDREIRO|SERVENTE|ARMADOR|CARPINTEIRO|PINTOR|BOMBEIRO|ELETRICISTA', na=False))
+                (df_comp['Descrição'].str.upper().str.contains('OFICIAL|AJUDANTE|PEDREIRO|SERVENTE|ARMADOR|CARPINTEIRO|PINTOR|ELETRICISTA|ENCANADOR', na=False))
             ].copy()
             
             if not mo.empty:
-                st.write("### 👷 Cronograma de Execução (Mão de Obra)")
+                st.write("### 👷 Cronograma de Execução")
                 prazos_mo = []
-                # Grid de inputs para os profissionais
-                n_mo = len(mo)
-                cols = st.columns(min(n_mo, 4))
+                cols = st.columns(min(len(mo), 4))
                 
                 for idx, (i, r) in enumerate(mo.iterrows()):
                     with cols[idx % 4]:
                         nome_resumo = " ".join(str(r['Descrição']).split()[:2])
                         n_h = st.number_input(f"Nº de {nome_resumo}:", min_value=1, value=1, key=f"n_{idx}")
-                        # Cálculo: (Coeficiente * Qtd) / (Jornada * Equipe)
                         p_serv = (r['Coeficiente'] * q_obra) / (jornada * n_h)
                         prazos_mo.append(p_serv)
                         st.write(f"⏱️ **{p_serv:.2f} dias**")
                 
                 prazo_calc = max(prazos_mo) if prazos_mo else 0.0
-                st.info(f"📅 **Prazo Estimado do Serviço:** {prazo_calc:.2f} dias úteis.")
-            else:
-                st.warning("Não foram detectados insumos de mão de obra direta nesta composição.")
+                st.info(f"📅 **Prazo Estimado:** {prazo_calc:.2f} dias úteis.")
 
             st.write("### 📋 Composição e Insumos")
             df_comp['Subtotal'] = df_comp['Coeficiente'] * q_obra * df_comp['Preço']
@@ -160,26 +170,16 @@ if dados:
                 "quantidade": q_obra, "valor_total": q_obra * item['p'],
                 "prazo": prazo_calc, "inicio": data_ini, "fim": dt_fim, "base": base_escolhida
             })
-            st.toast("Adicionado com sucesso!")
+            st.toast("Adicionado ao cronograma!")
 
-# --- GANTT E EXPORTAÇÃO ---
+# --- GANTT ---
 if st.session_state.cesta_itens:
     st.divider()
     df_resumo = pd.DataFrame(st.session_state.cesta_itens)
-    
     st.write("### 📊 Gráfico de Gantt")
-    fig = px.timeline(df_resumo, x_start="inicio", x_end="fim", y="descricao", color="base",
-                      title="Cronograma de Obra - Célula Engenharia")
+    fig = px.timeline(df_resumo, x_start="inicio", x_end="fim", y="descricao", color="base")
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
     
-    col_xl, col_limpar = st.columns([2, 1])
-    with col_xl:
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-            df_resumo.to_excel(writer, index=False)
-        st.download_button("📊 Baixar Cronograma em Excel", data=buf.getvalue(), file_name="cronograma_celula.xlsx")
-    
-    with col_limpar:
-        if st.button("🗑️ Limpar Tudo"): 
-            st.session_state.cesta_itens = []; st.rerun()
+    if st.button("🗑️ Limpar Cronograma"): 
+        st.session_state.cesta_itens = []; st.rerun()
